@@ -972,7 +972,7 @@ printf "\033[34;1mVersion: $OPENWRT_RELEASE\033[0m\n"
 
 VERSION_ID=$(echo $VERSION | awk -F. '{print $1}')
 
-if [ "$VERSION_ID" -ne 23 ] && [ "$VERSION_ID" -ne 24 ] && [ "$VERSION_ID" -ne 25 ]; then
+if [ "$VERSION_ID" -ne 23 ] && [ "$VERSION_ID" -ne 24 ]; then
     printf "\033[31;1mScript only support OpenWrt 23.05 and 24.10\033[0m\n"
     echo "For OpenWrt 21.02 and 22.03 you can:"
     echo "1) Use ansible https://github.com/itdoginfo/domain-routing-openwrt"

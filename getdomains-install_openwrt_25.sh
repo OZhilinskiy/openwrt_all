@@ -277,6 +277,34 @@ remove_forwarding() {
 # -------------------------------
 # Добавление VPN зоны и forwarding
 # -------------------------------
+# -------------------------------
+# Удаление старой зоны
+# -------------------------------
+remove_zone() {
+    local name="$1"
+    local idx
+    idx=$(uci show firewall | grep -E "@zone.*name='$name'" | awk -F '[][{}]' '{print $2}' | head -n1)
+    if [ ! -z "$idx" ]; then
+        printf "\033[33;1mDeleting old zone: $name (id=$idx)\033[0m\n"
+        uci delete firewall.@zone[$idx]
+        uci commit firewall
+    fi
+}
+
+# -------------------------------
+# Удаление старого forwarding
+# -------------------------------
+remove_forwarding() {
+    if [ ! -z "$forward_id" ]; then
+        printf "\033[33;1mDeleting old forwarding id=$forward_id\033[0m\n"
+        uci delete firewall.@forwarding[$forward_id]
+        uci commit firewall
+    fi
+}
+
+# -------------------------------
+# Добавление VPN зоны и forwarding
+# -------------------------------
 add_zone() {
     if [ "$TUNNEL" == 0 ]; then
         printf "\033[32;1mZone setting skipped\033[0m\n"

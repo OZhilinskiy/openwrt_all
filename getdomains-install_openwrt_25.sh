@@ -629,50 +629,88 @@ add_getdomains() {
         
         mkdir -p /tmp/dnsmasq.d
 
-        cat << EOF > /etc/init.d/getdomains
+        cat << 'EOF' > /etc/init.d/getdomains
 #!/bin/sh /etc/rc.common
 
 START=99
 
+check_internet() {
+    # Проверяем интернет через разные методы
+    if ping -c 1 -W 3 8.8.8.8 >/dev/null 2>&1; then
+        return 0
+    fi
+    if ping -c 1 -W 3 1.1.1.1 >/dev/null 2>&1; then
+        return 0
+    fi
+    if curl -s -m 3 http://captive.apple.com >/dev/null 2>&1; then
+        return 0
+    fi
+    return 1
+}
+
 start() {
-    DOMAINS_URL="$DOMAINS_URL"
+    DOMAINS_URL="https://raw.githubusercontent.com/itdoginfo/allow-domains/main/Russia/inside-dnsmasq-nfset.lst"
     count=0
-    max_retries=5
+    max_retries=10
     
-    while [ \$count -lt \$max_retries ]; do
-        if curl -m 3 -s github.com >/dev/null 2>&1; then
-            echo "Downloading domains list from \$DOMAINS_URL"
-            if curl -f -L "\$DOMAINS_URL" -o /tmp/dnsmasq.d/domains.lst; then
-                echo "Domains list downloaded successfully"
-                break
-            else
-                echo "Failed to download domains list"
-                break
-            fi
+    echo "Waiting for internet connection..."
+    
+    while [ $count -lt $max_retries ]; do
+        if check_internet; then
+            echo "Internet connection detected, downloading domains list..."
+            break
         else
-            echo "GitHub is not available. Check the internet availability [\$((count+1))/\$max_retries]"
-            count=\$((count + 1))
-            [ \$count -lt \$max_retries ] && sleep 10
+            count=$((count + 1))
+            echo "No internet connection, waiting... [$count/$max_retries]"
+            sleep 10
         fi
     done
-
-    if [ -f /tmp/dnsmasq.d/domains.lst ] && [ -s /tmp/dnsmasq.d/domains.lst ]; then
-        if dnsmasq --conf-file=/tmp/dnsmasq.d/domains.lst --test 2>&1 | grep -q "syntax check OK"; then
-            echo "Domain list syntax OK, restarting dnsmasq"
-            /etc/init.d/dnsmasq restart
-        else
-            echo "Domain list syntax error, check /tmp/dnsmasq.d/domains.lst"
-        fi
+    
+    if [ $count -ge $max_retries ]; then
+        echo "ERROR: No internet connection after $max_retries attempts"
+        exit 1
+    fi
+    
+    # Пробуем загрузить список доменов
+    echo "Downloading from: $DOMAINS_URL"
+    
+    # Пробуем curl с разными опциями
+    if curl -f -L -m 30 --retry 3 --retry-delay 5 "$DOMAINS_URL" -o /tmp/dnsmasq.d/domains.lst 2>/dev/null; then
+        echo "Domains list downloaded successfully"
+    elif wget -T 30 -t 3 -O /tmp/dnsmasq.d/domains.lst "$DOMAINS_URL" 2>/dev/null; then
+        echo "Domains list downloaded successfully (wget)"
     else
-        echo "Domain list file not found or empty"
+        echo "ERROR: Failed to download domains list"
+        echo "URL: $DOMAINS_URL"
+        exit 1
+    fi
+    
+    # Проверяем, что файл не пустой
+    if [ ! -s /tmp/dnsmasq.d/domains.lst ]; then
+        echo "ERROR: Downloaded file is empty"
+        exit 1
+    fi
+    
+    # Проверяем синтаксис
+    if dnsmasq --conf-file=/tmp/dnsmasq.d/domains.lst --test 2>&1 | grep -q "syntax check OK"; then
+        echo "Domain list syntax OK, restarting dnsmasq"
+        /etc/init.d/dnsmasq restart
+    else
+        echo "WARNING: Domain list syntax error, but file was saved"
+        # Показываем первые несколько строк для диагностики
+        echo "First 5 lines of downloaded file:"
+        head -5 /tmp/dnsmasq.d/domains.lst
     fi
 }
 EOF
 
+        # Заменяем URL в скрипте на выбранный
+        sed -i "s|DOMAINS_URL=\".*\"|DOMAINS_URL=\"$DOMAINS_URL\"|" /etc/init.d/getdomains
+
         chmod +x /etc/init.d/getdomains
         
         # Включение автозапуска
-        if /etc/init.d/getdomains enabled; then
+        if /etc/init.d/getdomains enabled 2>/dev/null; then
             printf "\033[32;1mgetdomains already enabled\033[0m\n"
         else
             /etc/init.d/getdomains enable
@@ -685,11 +723,29 @@ EOF
         else
             printf "\033[32;1mConfiguring crontab (updates every 8 hours)\033[0m\n"
             (crontab -l 2>/dev/null; echo "0 */8 * * * /etc/init.d/getdomains start") | crontab - 2>/dev/null
-            /etc/init.d/cron restart 2>/dev/null || /etc/init.d/crond restart 2>/dev/null
+            # Запускаем cron если он не запущен
+            if ! pgrep crond >/dev/null 2>&1 && ! pgrep cron >/dev/null 2>&1; then
+                /etc/init.d/cron start 2>/dev/null || /etc/init.d/crond start 2>/dev/null
+            fi
         fi
 
         printf "\033[32;1mStarting getdomains script...\033[0m\n"
-        /etc/init.d/getdomains start
+        
+        # Запускаем скрипт в фоне, чтобы не блокировать выполнение
+        /etc/init.d/getdomains start &
+        
+        # Даем скрипту время на выполнение
+        sleep 5
+        
+        # Проверяем результат
+        if [ -f /tmp/dnsmasq.d/domains.lst ] && [ -s /tmp/dnsmasq.d/domains.lst ]; then
+            printf "\033[32;1mDomain list downloaded successfully!\033[0m\n"
+            lines=$(wc -l < /tmp/dnsmasq.d/domains.lst)
+            printf "\033[32;1mLoaded %s domain rules\033[0m\n" "$lines"
+        else
+            printf "\033[33;1mDomain list not downloaded yet. Script is running in background.\033[0m\n"
+            printf "\033[33;1mCheck manually: /etc/init.d/getdomains start\033[0m\n"
+        fi
     fi
 }
 

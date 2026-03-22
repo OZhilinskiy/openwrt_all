@@ -47,7 +47,8 @@ add_mark() {
 }
 
 add_tunnel() {
-    echo "We can automatically configure only Wireguard and Amnezia WireGuard. OpenVPN, Sing-box(Shadowsocks2022, VMess, VLESS, etc) and tun2socks will need to be configured manually"
+    echo "We can automatically configure only WireGuard and Amnezia WireGuard."
+    echo "Other tunnels (OpenVPN, Sing-box, tun2socks) need manual configuration"
     echo "Select a tunnel:"
     echo "1) WireGuard"
     echo "2) OpenVPN"
@@ -59,63 +60,30 @@ add_tunnel() {
     echo "8) Skip this step"
 
     while true; do
-    read -r -p '' TUNNEL
-        case $TUNNEL in 
-
-        1) 
-            TUNNEL=wg
-            break
-            ;;
-
-        2)
-            TUNNEL=ovpn
-            break
-            ;;
-
-        3) 
-            TUNNEL=singbox
-            break
-            ;;
-
-        4) 
-            TUNNEL=tun2socks
-            break
-            ;;
-
-        5) 
-            TUNNEL=wgForYoutube
-            break
-            ;;
-
-        6) 
-            TUNNEL=awg
-            break
-            ;;
-
-        7) 
-            TUNNEL=awgForYoutube
-            break
-            ;;
-
-        8)
-            echo "Skip"
-            TUNNEL=0
-            break
-            ;;
-
-        *)
-            echo "Choose from the following options"
-            ;;
+        read -r -p "" TUNNEL
+        case $TUNNEL in
+            1) TUNNEL=wg; break ;;
+            2) TUNNEL=ovpn; break ;;
+            3) TUNNEL=singbox; break ;;
+            4) TUNNEL=tun2socks; break ;;
+            5) TUNNEL=wgForYoutube; break ;;
+            6) TUNNEL=awg; break ;;
+            7) TUNNEL=awgForYoutube; break ;;
+            8) echo "Skip"; TUNNEL=0; break ;;
+            *) echo "Choose from the following options" ;;
         esac
     done
 
+    # -------------------------------
+    # WireGuard
+    # -------------------------------
     if [ "$TUNNEL" == 'wg' ]; then
         printf "\033[32;1mConfigure WireGuard\033[0m\n"
-        if opkg list-installed | grep -q wireguard-tools; then
-            echo "Wireguard already installed"
+        if apk info wireguard-tools >/dev/null 2>&1; then
+            echo "WireGuard already installed"
         else
-            echo "Installed wg..."
-            opkg install wireguard-tools
+            echo "Installing wireguard-tools..."
+            apk add wireguard-tools
         fi
 
         route_vpn
@@ -124,23 +92,15 @@ add_tunnel() {
 
         while true; do
             read -r -p "Enter internal IP address with subnet, example 192.168.100.5/24 (from [Interface]):"$'\n' WG_IP
-            if echo "$WG_IP" | egrep -oq '^([0-9]{1,3}\.){3}[0-9]{1,3}/[0-9]+$'; then
-                break
-            else
-                echo "This IP is not valid. Please repeat"
-            fi
+            if echo "$WG_IP" | egrep -oq '^([0-9]{1,3}\.){3}[0-9]{1,3}/[0-9]+$'; then break; else echo "Invalid IP. Repeat."; fi
         done
 
         read -r -p "Enter the public key (from [Peer]):"$'\n' WG_PUBLIC_KEY
-        read -r -p "If use PresharedKey, Enter this (from [Peer]). If your don't use leave blank:"$'\n' WG_PRESHARED_KEY
+        read -r -p "If using PresharedKey, enter it (leave blank if none):"$'\n' WG_PRESHARED_KEY
         read -r -p "Enter Endpoint host without port (Domain or IP) (from [Peer]):"$'\n' WG_ENDPOINT
-
         read -r -p "Enter Endpoint host port (from [Peer]) [51820]:"$'\n' WG_ENDPOINT_PORT
         WG_ENDPOINT_PORT=${WG_ENDPOINT_PORT:-51820}
-        if [ "$WG_ENDPOINT_PORT" = '51820' ]; then
-            echo $WG_ENDPOINT_PORT
-        fi
-        
+
         uci set network.wg0=interface
         uci set network.wg0.proto='wireguard'
         uci set network.wg0.private_key=$WG_PRIVATE_KEY
@@ -162,104 +122,55 @@ add_tunnel() {
         uci commit
     fi
 
+    # -------------------------------
+    # OpenVPN
+    # -------------------------------
     if [ "$TUNNEL" == 'ovpn' ]; then
-        if opkg list-installed | grep -q openvpn-openssl; then
+        if apk info openvpn >/dev/null 2>&1; then
             echo "OpenVPN already installed"
         else
-            echo "Installed openvpn"
-            opkg install openvpn-openssl
+            echo "Installing OpenVPN..."
+            apk add openvpn
         fi
         printf "\033[32;1mConfigure route for OpenVPN\033[0m\n"
         route_vpn
     fi
 
+    # -------------------------------
+    # Sing-box
+    # -------------------------------
     if [ "$TUNNEL" == 'singbox' ]; then
-        if opkg list-installed | grep -q sing-box; then
+        if apk info sing-box >/dev/null 2>&1; then
             echo "Sing-box already installed"
         else
             AVAILABLE_SPACE=$(df / | awk 'NR>1 { print $4 }')
-            if  [[ "$AVAILABLE_SPACE" -gt 2000 ]]; then
-                echo "Installed sing-box"
-                opkg install sing-box
+            if [[ "$AVAILABLE_SPACE" -gt 2000 ]]; then
+                echo "Installing Sing-box..."
+                apk add sing-box
             else
-                printf "\033[31;1mNo free space for a sing-box. Sing-box is not installed.\033[0m\n"
+                printf "\033[31;1mNo free space for Sing-box\033[0m\n"
                 exit 1
             fi
-        fi
-        if grep -q "option enabled '0'" /etc/config/sing-box; then
-            sed -i "s/	option enabled \'0\'/	option enabled \'1\'/" /etc/config/sing-box
-        fi
-        if grep -q "option user 'sing-box'" /etc/config/sing-box; then
-            sed -i "s/	option user \'sing-box\'/	option user \'root\'/" /etc/config/sing-box
-        fi
-        if grep -q "tun0" /etc/sing-box/config.json; then
-        printf "\033[32;1mConfig /etc/sing-box/config.json already exists\033[0m\n"
-        else
-cat << 'EOF' > /etc/sing-box/config.json
-{
-  "log": {
-    "level": "debug"
-  },
-  "inbounds": [
-    {
-      "type": "tun",
-      "interface_name": "tun0",
-      "domain_strategy": "ipv4_only",
-      "address": ["172.16.250.1/30"],
-      "auto_route": false,
-      "strict_route": false,
-      "sniff": true 
-   }
-  ],
-  "outbounds": [
-    {
-      "type": "$TYPE",
-      "server": "$HOST",
-      "server_port": $PORT,
-      "method": "$METHOD",
-      "password": "$PASS"
-    }
-  ],
-  "route": {
-    "auto_detect_interface": true
-  }
-}
-EOF
-        printf "\033[32;1mCreate template config in /etc/sing-box/config.json. Edit it manually. Official doc: https://sing-box.sagernet.org/configuration/outbound/\033[0m\n"
-        printf "\033[32;1mOfficial doc: https://sing-box.sagernet.org/configuration/outbound/\033[0m\n"
-        printf "\033[32;1mManual with example SS: https://cli.co/Badmn3K \033[0m\n"
-
         fi
         printf "\033[32;1mConfigure route for Sing-box\033[0m\n"
         route_vpn
     fi
 
-    if [ "$TUNNEL" == 'wgForYoutube' ]; then
-        add_internal_wg Wireguard
-    fi
-
-    if [ "$TUNNEL" == 'awgForYoutube' ]; then
-        add_internal_wg AmneziaWG
-    fi
-
+    # -------------------------------
+    # Amnezia WireGuard
+    # -------------------------------
     if [ "$TUNNEL" == 'awg' ]; then
         printf "\033[32;1mConfigure Amnezia WireGuard\033[0m\n"
-
         install_awg_packages
-
         route_vpn
 
         read -r -p "Enter the private key (from [Interface]):"$'\n' AWG_PRIVATE_KEY
-
         while true; do
-            read -r -p "Enter internal IP address with subnet, example 192.168.100.5/24 (Address from [Interface]):"$'\n' AWG_IP
-            if echo "$AWG_IP" | egrep -oq '^([0-9]{1,3}\.){3}[0-9]{1,3}/[0-9]+$'; then
-                break
-            else
-                echo "This IP is not valid. Please repeat"
-            fi
+            read -r -p "Enter internal IP address with subnet (from [Interface]):"$'\n' AWG_IP
+            if echo "$AWG_IP" | egrep -oq '^([0-9]{1,3}\.){3}[0-9]{1,3}/[0-9]+$'; then break; else echo "Invalid IP. Repeat."; fi
         done
 
+        # Остальные параметры
         read -r -p "Enter Jc value (from [Interface]):"$'\n' AWG_JC
         read -r -p "Enter Jmin value (from [Interface]):"$'\n' AWG_JMIN
         read -r -p "Enter Jmax value (from [Interface]):"$'\n' AWG_JMAX
@@ -269,23 +180,19 @@ EOF
         read -r -p "Enter H2 value (from [Interface]):"$'\n' AWG_H2
         read -r -p "Enter H3 value (from [Interface]):"$'\n' AWG_H3
         read -r -p "Enter H4 value (from [Interface]):"$'\n' AWG_H4
-    
-        read -r -p "Enter the public key (from [Peer]):"$'\n' AWG_PUBLIC_KEY
-        read -r -p "If use PresharedKey, Enter this (from [Peer]). If your don't use leave blank:"$'\n' AWG_PRESHARED_KEY
-        read -r -p "Enter Endpoint host without port (Domain or IP) (from [Peer]):"$'\n' AWG_ENDPOINT
 
+        read -r -p "Enter the public key (from [Peer]):"$'\n' AWG_PUBLIC_KEY
+        read -r -p "If using PresharedKey, enter it (leave blank if none):"$'\n' AWG_PRESHARED_KEY
+        read -r -p "Enter Endpoint host without port (Domain or IP) (from [Peer]):"$'\n' AWG_ENDPOINT
         read -r -p "Enter Endpoint host port (from [Peer]) [51820]:"$'\n' AWG_ENDPOINT_PORT
         AWG_ENDPOINT_PORT=${AWG_ENDPOINT_PORT:-51820}
-        if [ "$AWG_ENDPOINT_PORT" = '51820' ]; then
-            echo $AWG_ENDPOINT_PORT
-        fi
-        
+
+        # Настройка UCI
         uci set network.awg0=interface
         uci set network.awg0.proto='amneziawg'
         uci set network.awg0.private_key=$AWG_PRIVATE_KEY
         uci set network.awg0.listen_port='51820'
         uci set network.awg0.addresses=$AWG_IP
-
         uci set network.awg0.awg_jc=$AWG_JC
         uci set network.awg0.awg_jmin=$AWG_JMIN
         uci set network.awg0.awg_jmax=$AWG_JMAX
@@ -299,7 +206,6 @@ EOF
         if ! uci show network | grep -q amneziawg_awg0; then
             uci add network amneziawg_awg0
         fi
-
         uci set network.@amneziawg_awg0[0]=amneziawg_awg0
         uci set network.@amneziawg_awg0[0].name='awg0_client'
         uci set network.@amneziawg_awg0[0].public_key=$AWG_PUBLIC_KEY
@@ -311,7 +217,6 @@ EOF
         uci set network.@amneziawg_awg0[0].endpoint_port=$AWG_ENDPOINT_PORT
         uci commit
     fi
-
 }
 
 dnsmasqfull() {
@@ -987,7 +892,7 @@ check_repo
 
 add_packages
 
-#add_tunnel
+add_tunnel
 
 #add_mark
 
@@ -1005,7 +910,7 @@ add_packages
 
 #add_getdomains
 
-printf "\033[32;1mRestart network\033[0m\n"
-/etc/init.d/network restart
+#printf "\033[32;1mRestart network\033[0m\n"
+#/etc/init.d/network restart
 
 printf "\033[32;1mDone\033[0m\n"

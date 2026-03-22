@@ -581,9 +581,10 @@ add_packages() {
             printf "\033[32;1m$package already installed\033[0m\n"
         else
             printf "\033[32;1mInstalling $package...\033[0m\n"
-            apk add "$package"
+            apk add "$package"  # <-- правильная команда
             
-            if "$package" --version >/dev/null 2>&1; then
+            # проверка
+            if command -v "$package" >/dev/null 2>&1; then
                 printf "\033[32;1m$package was successfully installed and available\033[0m\n"
             else
                 printf "\033[31;1mError: failed to install $package\033[0m\n"

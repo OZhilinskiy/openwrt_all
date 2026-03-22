@@ -303,74 +303,103 @@ remove_forwarding() {
 }
 
 add_zone() {
-    if [ "$TUNNEL" = 0 ]; then
+    if  [ "$TUNNEL" == 0 ]; then
         printf "\033[32;1mZone setting skipped\033[0m\n"
-        printf "\033[32;1mForwarding setting skipped\033[0m\n"
-        return
-    fi
-
-    # Проверка и удаление старых зон
-    for zone in tun0 wg0 awg0; do
-        zone_id=$(uci show firewall | grep -E "@zone.*$zone" | awk -F '[][{}]' '{print $2}' | head -n1)
-        if [ ! -z "$zone_id" ] && [ "$zone_id" != "0" ] && [ "$zone_id" != "1" ]; then
-            remove_zone "$zone"
-        fi
-    done
-
-    # Создание новой зоны
-    if uci show firewall | grep -q "@zone.*name='$TUNNEL'"; then
-        printf "\033[32;1mZone '$TUNNEL' already exists\033[0m\n"
+    elif uci show firewall | grep -q "@zone.*name='$TUNNEL'"; then
+        printf "\033[32;1mZone already exist\033[0m\n"
     else
-        printf "\033[32;1mCreating zone: $TUNNEL\033[0m\n"
-        ZONE_IDX=$(uci add firewall zone)
-        uci set firewall.@zone[$ZONE_IDX].name="$TUNNEL"
+        printf "\033[32;1mCreate zone\033[0m\n"
 
-        case "$TUNNEL" in
-            wg) uci set firewall.@zone[$ZONE_IDX].network='wg0';;
-            awg) uci set firewall.@zone[$ZONE_IDX].network='awg0';;
-            singbox|ovpn|tun2socks) uci set firewall.@zone[$ZONE_IDX].device='tun0';;
-        esac
+        # Delete exists zone
+        zone_tun_id=$(uci show firewall | grep -E '@zone.*tun0' | awk -F '[][{}]' '{print $2}' | head -n 1)
+        if [ "$zone_tun_id" == 0 ] || [ "$zone_tun_id" == 1 ]; then
+            printf "\033[32;1mtun0 zone has an identifier of 0 or 1. That's not ok. Fix your firewall. lan and wan zones should have identifiers 0 and 1. \033[0m\n"
+            exit 1
+        fi
+        if [ ! -z "$zone_tun_id" ]; then
+            while uci -q delete firewall.@zone[$zone_tun_id]; do :; done
+        fi
 
-        # Forward/Input/Output по типу туннеля
-        case "$TUNNEL" in
-            wg|awg|ovpn|tun2socks)
-                uci set firewall.@zone[$ZONE_IDX].forward='REJECT'
-                uci set firewall.@zone[$ZONE_IDX].output='ACCEPT'
-                uci set firewall.@zone[$ZONE_IDX].input='REJECT'
-            ;;
-            singbox)
-                uci set firewall.@zone[$ZONE_IDX].forward='ACCEPT'
-                uci set firewall.@zone[$ZONE_IDX].output='ACCEPT'
-                uci set firewall.@zone[$ZONE_IDX].input='ACCEPT'
-            ;;
-        esac
+        zone_wg_id=$(uci show firewall | grep -E '@zone.*wg0' | awk -F '[][{}]' '{print $2}' | head -n 1)
+        if [ "$zone_wg_id" == 0 ] || [ "$zone_wg_id" == 1 ]; then
+            printf "\033[32;1mwg0 zone has an identifier of 0 or 1. That's not ok. Fix your firewall. lan and wan zones should have identifiers 0 and 1. \033[0m\n"
+            exit 1
+        fi
+        if [ ! -z "$zone_wg_id" ]; then
+            while uci -q delete firewall.@zone[$zone_wg_id]; do :; done
+        fi
 
-        uci set firewall.@zone[$ZONE_IDX].masq='1'
-        uci set firewall.@zone[$ZONE_IDX].mtu_fix='1'
-        uci set firewall.@zone[$ZONE_IDX].family='ipv4'
+        zone_awg_id=$(uci show firewall | grep -E '@zone.*awg0' | awk -F '[][{}]' '{print $2}' | head -n 1)
+        if [ "$zone_awg_id" == 0 ] || [ "$zone_awg_id" == 1 ]; then
+            printf "\033[32;1mawg0 zone has an identifier of 0 or 1. That's not ok. Fix your firewall. lan and wan zones should have identifiers 0 and 1. \033[0m\n"
+            exit 1
+        fi
+        if [ ! -z "$zone_awg_id" ]; then
+            while uci -q delete firewall.@zone[$zone_awg_id]; do :; done
+        fi
+
+        uci add firewall zone
+        uci set firewall.@zone[-1].name="$TUNNEL"
+        if [ "$TUNNEL" == wg ]; then
+            uci set firewall.@zone[-1].network='wg0'
+        elif [ "$TUNNEL" == awg ]; then
+            uci set firewall.@zone[-1].network='awg0'
+        elif [ "$TUNNEL" == singbox ] || [ "$TUNNEL" == ovpn ] || [ "$TUNNEL" == tun2socks ]; then
+            uci set firewall.@zone[-1].device='tun0'
+        fi
+        if [ "$TUNNEL" == wg ] || [ "$TUNNEL" == awg ] || [ "$TUNNEL" == ovpn ] || [ "$TUNNEL" == tun2socks ]; then
+            uci set firewall.@zone[-1].forward='REJECT'
+            uci set firewall.@zone[-1].output='ACCEPT'
+            uci set firewall.@zone[-1].input='REJECT'
+        elif [ "$TUNNEL" == singbox ]; then
+            uci set firewall.@zone[-1].forward='ACCEPT'
+            uci set firewall.@zone[-1].output='ACCEPT'
+            uci set firewall.@zone[-1].input='ACCEPT'
+        fi
+        uci set firewall.@zone[-1].masq='1'
+        uci set firewall.@zone[-1].mtu_fix='1'
+        uci set firewall.@zone[-1].family='ipv4'
         uci commit firewall
     fi
-
-    # Настройка forwarding
-    if uci show firewall | grep -q "@forwarding.*name='$TUNNEL-lan'"; then
-        printf "\033[32;1mForwarding for '$TUNNEL-lan' already exists\033[0m\n"
+    
+    if [ "$TUNNEL" == 0 ]; then
+        printf "\033[32;1mForwarding setting skipped\033[0m\n"
+    elif uci show firewall | grep -q "@forwarding.*name='$TUNNEL-lan'"; then
+        printf "\033[32;1mForwarding already configured\033[0m\n"
     else
-        printf "\033[32;1mCreating forwarding from lan to $TUNNEL\033[0m\n"
+        printf "\033[32;1mConfigured forwarding\033[0m\n"
+        # Delete exists forwarding
+        if [[ $TUNNEL != "wg" ]]; then
+            forward_id=$(uci show firewall | grep -E "@forwarding.*dest='wg'" | awk -F '[][{}]' '{print $2}' | head -n 1)
+            remove_forwarding
+        fi
 
-        # Удаляем старые forwarding к другим туннелям
-        for fwd in wg awg ovpn singbox tun2socks; do
-            if [ "$TUNNEL" != "$fwd" ]; then
-                forward_id=$(uci show firewall | grep -E "@forwarding.*dest='$fwd'" | awk -F '[][{}]' '{print $2}' | head -n1)
-                remove_forwarding
-            fi
-        done
+        if [[ $TUNNEL != "awg" ]]; then
+            forward_id=$(uci show firewall | grep -E "@forwarding.*dest='awg'" | awk -F '[][{}]' '{print $2}' | head -n 1)
+            remove_forwarding
+        fi
 
-        FWD_IDX=$(uci add firewall forwarding)
-        uci set firewall.@forwarding[$FWD_IDX]=forwarding
-        uci set firewall.@forwarding[$FWD_IDX].name="$TUNNEL-lan"
-        uci set firewall.@forwarding[$FWD_IDX].dest="$TUNNEL"
-        uci set firewall.@forwarding[$FWD_IDX].src='lan'
-        uci set firewall.@forwarding[$FWD_IDX].family='ipv4'
+        if [[ $TUNNEL != "ovpn" ]]; then
+            forward_id=$(uci show firewall | grep -E "@forwarding.*dest='ovpn'" | awk -F '[][{}]' '{print $2}' | head -n 1)
+            remove_forwarding
+        fi
+
+        if [[ $TUNNEL != "singbox" ]]; then
+            forward_id=$(uci show firewall | grep -E "@forwarding.*dest='singbox'" | awk -F '[][{}]' '{print $2}' | head -n 1)
+            remove_forwarding
+        fi
+
+        if [[ $TUNNEL != "tun2socks" ]]; then
+            forward_id=$(uci show firewall | grep -E "@forwarding.*dest='tun2socks'" | awk -F '[][{}]' '{print $2}' | head -n 1)
+            remove_forwarding
+        fi
+
+        uci add firewall forwarding
+        uci set firewall.@forwarding[-1]=forwarding
+        uci set firewall.@forwarding[-1].name="$TUNNEL-lan"
+        uci set firewall.@forwarding[-1].dest="$TUNNEL"
+        uci set firewall.@forwarding[-1].src='lan'
+        uci set firewall.@forwarding[-1].family='ipv4'
         uci commit firewall
     fi
 }

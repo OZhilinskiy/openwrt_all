@@ -526,10 +526,13 @@ add_dns_resolver() {
         fi
 
         # Перезапуск dnscrypt-proxy2
+        # Проверяем и перезапускаем DNSCrypt
         if [ -x /etc/init.d/dnscrypt-proxy2 ]; then
             /etc/init.d/dnscrypt-proxy2 restart
+        elif [ -x /etc/init.d/dnscrypt-proxy ]; then
+            /etc/init.d/dnscrypt-proxy restart
         else
-            printf "\033[33;1mCannot restart dnscrypt-proxy automatically. Restart manually\033[0m\n"
+            printf "\033[33;1mCannot restart DNSCrypt automatically. Restart manually\033[0m\n"
         fi
 
         printf "\033[32;1mWaiting 30s for relays list to load...\033[0m\n"
@@ -595,7 +598,7 @@ add_packages() {
 }
 
 add_getdomains() {
-    echo "Choose you country"
+    echo "Choose your country:"
     echo "Select:"
     echo "1) Russia inside. You are inside Russia"
     echo "2) Russia outside. You are outside of Russia, but you need access to Russian resources"
@@ -603,89 +606,99 @@ add_getdomains() {
     echo "4) Skip script creation"
 
     while true; do
-    read -r -p '' COUNTRY
-        case $COUNTRY in 
-
-        1) 
-            COUNTRY=russia_inside
-            break
-            ;;
-
-        2)
-            COUNTRY=russia_outside
-            break
-            ;;
-
-        3) 
-            COUNTRY=ukraine
-            break
-            ;;
-
-        4) 
-            echo "Skiped"
-            COUNTRY=0
-            break
-            ;;
-
-        *)
-            echo "Choose from the following options"
-            ;;
+        read -r -p '' COUNTRY
+        case $COUNTRY in
+            1)
+                COUNTRY=russia_inside
+                break
+                ;;
+            2)
+                COUNTRY=russia_outside
+                break
+                ;;
+            3)
+                COUNTRY=ukraine
+                break
+                ;;
+            4|"")
+                echo "Skipped"
+                COUNTRY=0
+                break
+                ;;
+            *)
+                echo "Choose from the following options"
+                ;;
         esac
     done
 
-    if [ "$COUNTRY" == 'russia_inside' ]; then
-        EOF_DOMAINS=DOMAINS=https://raw.githubusercontent.com/itdoginfo/allow-domains/main/Russia/inside-dnsmasq-nfset.lst
-    elif [ "$COUNTRY" == 'russia_outside' ]; then
-        EOF_DOMAINS=DOMAINS=https://raw.githubusercontent.com/itdoginfo/allow-domains/main/Russia/outside-dnsmasq-nfset.lst
-    elif [ "$COUNTRY" == 'ukraine' ]; then
-        EOF_DOMAINS=DOMAINS=https://raw.githubusercontent.com/itdoginfo/allow-domains/main/Ukraine/inside-dnsmasq-nfset.lst
+    if [ "$COUNTRY" = "0" ]; then
+        return
     fi
 
-    if [ "$COUNTRY" != '0' ]; then
-        printf "\033[32;1mCreate script /etc/init.d/getdomains\033[0m\n"
+    # ----------------------
+    # Выбираем URL с доменами
+    # ----------------------
+    DOMAINS_URL=""
+    case $COUNTRY in
+        russia_inside)
+            DOMAINS_URL="https://raw.githubusercontent.com/itdoginfo/allow-domains/main/Russia/inside-dnsmasq-nfset.lst"
+            ;;
+        russia_outside)
+            DOMAINS_URL="https://raw.githubusercontent.com/itdoginfo/allow-domains/main/Russia/outside-dnsmasq-nfset.lst"
+            ;;
+        ukraine)
+            DOMAINS_URL="https://raw.githubusercontent.com/itdoginfo/allow-domains/main/Ukraine/inside-dnsmasq-nfset.lst"
+            ;;
+    esac
 
-cat << EOF > /etc/init.d/getdomains
+    printf "\033[32;1mCreate script /etc/init.d/getdomains\033[0m\n"
+
+    cat << EOF > /etc/init.d/getdomains
 #!/bin/sh /etc/rc.common
 
 START=99
 
-start () {
-    $EOF_DOMAINS
-EOF
-cat << 'EOF' >> /etc/init.d/getdomains
+start() {
+    DOMAINS="$DOMAINS_URL"
+    
+    mkdir -p /tmp/dnsmasq.d
     count=0
     while true; do
-        if curl -m 3 github.com; then
-            curl -f $DOMAINS --output /tmp/dnsmasq.d/domains.lst
+        if curl -m 3 github.com >/dev/null 2>&1; then
+            curl -sf \$DOMAINS --output /tmp/dnsmasq.d/domains.lst
             break
         else
-            echo "GitHub is not available. Check the internet availability [$count]"
-            count=$((count+1))
+            echo "GitHub is not available. Check internet connectivity [$count]"
+            count=\$((count+1))
+            sleep 5
         fi
     done
 
     if dnsmasq --conf-file=/tmp/dnsmasq.d/domains.lst --test 2>&1 | grep -q "syntax check OK"; then
         /etc/init.d/dnsmasq restart
+        echo "Dnsmasq restarted successfully"
+    else
+        echo "Error in domains list. Dnsmasq not restarted"
     fi
 }
 EOF
 
-        chmod +x /etc/init.d/getdomains
-        /etc/init.d/getdomains enable
+    chmod +x /etc/init.d/getdomains
+    /etc/init.d/getdomains enable
 
-        if crontab -l | grep -q /etc/init.d/getdomains; then
-            printf "\033[32;1mCrontab already configured\033[0m\n"
-
-        else
-            crontab -l | { cat; echo "0 */8 * * * /etc/init.d/getdomains start"; } | crontab -
-            printf "\033[32;1mIgnore this error. This is normal for a new installation\033[0m\n"
-            /etc/init.d/cron restart
-        fi
-
-        printf "\033[32;1mStart script\033[0m\n"
-
-        /etc/init.d/getdomains start
+    # ----------------------
+    # Настройка cron
+    # ----------------------
+    if ! crontab -l 2>/dev/null | grep -q "/etc/init.d/getdomains"; then
+        ( crontab -l 2>/dev/null; echo "0 */8 * * * /etc/init.d/getdomains start" ) | crontab -
+        printf "\033[32;1mCron configured to run every 8 hours\033[0m\n"
+        /etc/init.d/cron restart
+    else
+        printf "\033[32;1mCrontab already configured\033[0m\n"
     fi
+
+    printf "\033[32;1mStart script now\033[0m\n"
+    /etc/init.d/getdomains start
 }
 
 add_internal_wg() {

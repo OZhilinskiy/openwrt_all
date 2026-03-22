@@ -4,7 +4,7 @@
 
 check_repo() {
     printf "\033[32;1mChecking OpenWrt repo availability...\033[0m\n"
-    opkg update | grep -q "Failed to download" && printf "\033[32;1mopkg failed. Check internet or date. Command for force ntp sync: ntpd -p ptbtime1.ptb.de\033[0m\n" && exit 1
+    apk update | grep -q "Failed to download" && printf "\033[32;1mopkg failed. Check internet or date. Command for force ntp sync: ntpd -p ptbtime1.ptb.de\033[0m\n" && exit 1
 }
 
 route_vpn () {
@@ -986,23 +986,23 @@ check_repo
 
 add_packages
 
-add_tunnel
+#add_tunnel
 
-add_mark
+#add_mark
 
-add_zone
+#add_zone
 
-show_manual
+#show_manual
 
-add_set
+#add_set
 
-dnsmasqfull
+#dnsmasqfull
 
-dnsmasqconfdir
+#dnsmasqconfdir
 
-add_dns_resolver
+#add_dns_resolver
 
-add_getdomains
+#add_getdomains
 
 printf "\033[32;1mRestart network\033[0m\n"
 /etc/init.d/network restart

@@ -220,14 +220,25 @@ add_tunnel() {
 }
 
 dnsmasqfull() {
-    if opkg list-installed | grep -q dnsmasq-full; then
-        printf "\033[32;1mdnsmasq-full already installed\033[0m\n"
-    else
-        printf "\033[32;1mInstalled dnsmasq-full\033[0m\n"
-        cd /tmp/ && opkg download dnsmasq-full
-        opkg remove dnsmasq && opkg install dnsmasq-full --cache /tmp/
+    apk update
 
-        [ -f /etc/config/dhcp-opkg ] && cp /etc/config/dhcp /etc/config/dhcp-old && mv /etc/config/dhcp-opkg /etc/config/dhcp
+    # проверка установлен ли dnsmasq
+    if apk list -I | grep -q "^dnsmasq"; then
+        printf "\033[32;1mdnsmasq is already installed\033[0m\n"
+    else
+        printf "\033[32;1mInstalling dnsmasq...\033[0m\n"
+        apk add dnsmasq
+        if [ $? -ne 0 ]; then
+            printf "\033[31;1mError: failed to install dnsmasq\033[0m\n"
+            return 1
+        fi
+    fi
+
+    # замена конфига если есть
+    if [ -f /etc/config/dhcp-opkg ]; then
+        cp /etc/config/dhcp /etc/config/dhcp-old
+        mv /etc/config/dhcp-opkg /etc/config/dhcp
+        printf "\033[32;1mConfig replaced\033[0m\n"
     fi
 }
 
@@ -945,19 +956,19 @@ check_repo
 
 #add_packages
 
-#add_tunnel
+add_tunnel
 
 add_mark
 
 add_zone
 
-#show_manual
+show_manual
 
-#add_set
+add_set
 
-#dnsmasqfull
+dnsmasqfull
 
-#dnsmasqconfdir
+dnsmasqconfdir
 
 #add_dns_resolver
 

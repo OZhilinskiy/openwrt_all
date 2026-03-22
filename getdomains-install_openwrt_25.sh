@@ -598,36 +598,21 @@ add_packages() {
 }
 
 add_getdomains() {
-    echo "Choose your country:"
+    echo "Choose you country"
     echo "Select:"
-    echo "1) Russia inside (you are inside Russia)"
-    echo "2) Russia outside (you are outside Russia, need access to Russian resources)"
-    echo "3) Ukraine (uablacklist.net list)"
+    echo "1) Russia inside. You are inside Russia"
+    echo "2) Russia outside. You are outside of Russia, but you need access to Russian resources"
+    echo "3) Ukraine. uablacklist.net list"
     echo "4) Skip script creation"
 
     while true; do
-        read -r -p '' COUNTRY
-        case $COUNTRY in
-            1)
-                COUNTRY=russia_inside
-                break
-                ;;
-            2)
-                COUNTRY=russia_outside
-                break
-                ;;
-            3)
-                COUNTRY=ukraine
-                break
-                ;;
-            4|"")
-                echo "Skipped"
-                COUNTRY=0
-                break
-                ;;
-            *)
-                echo "Choose from the following options"
-                ;;
+        read -r COUNTRY
+        case $COUNTRY in 
+            1) COUNTRY="russia_inside"; break ;;
+            2) COUNTRY="russia_outside"; break ;;
+            3) COUNTRY="ukraine"; break ;;
+            4) echo "Skiped"; COUNTRY=0; break ;;
+            *) echo "Choose from the following options" ;;
         esac
     done
 
@@ -640,45 +625,70 @@ add_getdomains() {
     fi
 
     if [ "$COUNTRY" != "0" ]; then
-        printf "\033[32;1mCreating /etc/init.d/getdomains script\033[0m\n"
+        printf "\033[32;1mCreate script /etc/init.d/getdomains\033[0m\n"
+        
+        mkdir -p /tmp/dnsmasq.d
 
         cat << EOF > /etc/init.d/getdomains
 #!/bin/sh /etc/rc.common
+
 START=99
 
 start() {
-    mkdir -p /tmp/dnsmasq.d
+    DOMAINS_URL="$DOMAINS_URL"
     count=0
-    while true; do
-        if curl -m 3 -s https://github.com >/dev/null; then
-            curl -sf "$DOMAINS_URL" -o /tmp/dnsmasq.d/domains.lst
-            break
+    max_retries=5
+    
+    while [ \$count -lt \$max_retries ]; do
+        if curl -m 3 -s github.com >/dev/null 2>&1; then
+            echo "Downloading domains list from \$DOMAINS_URL"
+            if curl -f -L "\$DOMAINS_URL" -o /tmp/dnsmasq.d/domains.lst; then
+                echo "Domains list downloaded successfully"
+                break
+            else
+                echo "Failed to download domains list"
+                break
+            fi
         else
-            echo "GitHub is not available. Check internet connectivity [$count]"
-            count=\$((count+1))
-            sleep 5
+            echo "GitHub is not available. Check the internet availability [\$((count+1))/\$max_retries]"
+            count=\$((count + 1))
+            [ \$count -lt \$max_retries ] && sleep 10
         fi
     done
 
-    if dnsmasq --conf-file=/tmp/dnsmasq.d/domains.lst --test 2>&1 | grep -q "syntax check OK"; then
-        /etc/init.d/dnsmasq restart
-        echo "Domains list applied successfully"
+    if [ -f /tmp/dnsmasq.d/domains.lst ] && [ -s /tmp/dnsmasq.d/domains.lst ]; then
+        if dnsmasq --conf-file=/tmp/dnsmasq.d/domains.lst --test 2>&1 | grep -q "syntax check OK"; then
+            echo "Domain list syntax OK, restarting dnsmasq"
+            /etc/init.d/dnsmasq restart
+        else
+            echo "Domain list syntax error, check /tmp/dnsmasq.d/domains.lst"
+        fi
     else
-        echo "Failed to apply domains list. Check /tmp/dnsmasq.d/domains.lst"
+        echo "Domain list file not found or empty"
     fi
 }
 EOF
 
         chmod +x /etc/init.d/getdomains
-        /etc/init.d/getdomains enable
-
-        # Добавляем в crontab, если нет
-        if ! crontab -l 2>/dev/null | grep -q "/etc/init.d/getdomains"; then
-            (crontab -l 2>/dev/null; echo "0 */8 * * * /etc/init.d/getdomains start") | crontab -
-            /etc/init.d/cron restart
+        
+        # Включение автозапуска
+        if /etc/init.d/getdomains enabled; then
+            printf "\033[32;1mgetdomains already enabled\033[0m\n"
+        else
+            /etc/init.d/getdomains enable
+            printf "\033[32;1mgetdomains enabled for auto-start\033[0m\n"
         fi
 
-        printf "\033[32;1mStarting getdomains script now\033[0m\n"
+        # Настройка crontab
+        if crontab -l 2>/dev/null | grep -q /etc/init.d/getdomains; then
+            printf "\033[32;1mCrontab already configured\033[0m\n"
+        else
+            printf "\033[32;1mConfiguring crontab (updates every 8 hours)\033[0m\n"
+            (crontab -l 2>/dev/null; echo "0 */8 * * * /etc/init.d/getdomains start") | crontab - 2>/dev/null
+            /etc/init.d/cron restart 2>/dev/null || /etc/init.d/crond restart 2>/dev/null
+        fi
+
+        printf "\033[32;1mStarting getdomains script...\033[0m\n"
         /etc/init.d/getdomains start
     fi
 }

@@ -494,7 +494,7 @@ add_dns_resolver() {
     # DNSCrypt
     # ----------------------
     if [ "$DNS_RESOLVER" = 'DNSCRYPT' ]; then
-        if apk list -I | grep -q dnscrypt-proxy; then
+        if apk list -I | grep -q '^dnscrypt-proxy'; then
             printf "\033[32;1mDNSCrypt2 already installed\033[0m\n"
         else
             printf "\033[32;1mInstalling dnscrypt-proxy\033[0m\n"
@@ -506,14 +506,21 @@ add_dns_resolver() {
             fi
         fi
 
-        # Настройка
-        if grep -q "# server_names" /etc/dnscrypt-proxy/dnscrypt-proxy.toml; then
-            sed -i "s/^# server_names =.*/server_names = ['google', 'cloudflare', 'scaleway-fr', 'yandex']/g" /etc/dnscrypt-proxy/dnscrypt-proxy.toml
+        # Настройка server_names
+        if [ -f /etc/dnscrypt-proxy/dnscrypt-proxy.toml ]; then
+            sed -i "s/^#* server_names =.*/server_names = ['google', 'cloudflare', 'scaleway-fr', 'yandex']/" /etc/dnscrypt-proxy/dnscrypt-proxy.toml
         fi
 
-        printf "\033[32;1mRestart DNSCrypt\033[0m\n"
-        /etc/init.d/dnscrypt-proxy restart
-        printf "\033[32;1mWaiting for relays list to load...\033[0m\n"
+        # Перезапуск DNSCrypt (для apk / s6 или rc.d)
+        if [ -x /etc/init.d/dnscrypt-proxy ]; then
+            /etc/init.d/dnscrypt-proxy restart
+        elif command -v rc.d >/dev/null 2>&1; then
+            rc.d restart dnscrypt-proxy
+        else
+            printf "\033[33;1mWarning: cannot restart dnscrypt-proxy automatically. Restart manually\033[0m\n"
+        fi
+
+        printf "\033[32;1mWaiting 30s for relays list to load...\033[0m\n"
         sleep 30
 
         if [ -f /etc/dnscrypt-proxy/relays.md ]; then
@@ -524,7 +531,7 @@ add_dns_resolver() {
             uci commit dhcp
             /etc/init.d/dnsmasq restart
         else
-            printf "\033[31;1mDNSCrypt did not download relays list. Retry installation\033[0m\n"
+            printf "\033[31;1mDNSCrypt relays list not found. Retry installation\033[0m\n"
         fi
     fi
 

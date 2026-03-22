@@ -4,24 +4,24 @@
 
 check_repo() {
     printf "\033[32;1mChecking OpenWrt repo availability...\033[0m\n"
-    opkg update | grep -q "Failed to download" && printf "\033[32;1mopkg failed. Check internet or date. Command for force ntp sync: ntpd -p ptbtime1.ptb.de\033[0m\n" && exit 1
+    opkg update 2>&1 | grep -q "Failed to download" && printf "\033[32;1mopkg failed. Check internet or date. Command for force ntp sync: ntpd -p ptbtime1.ptb.de\033[0m\n" && exit 1
 }
 
 route_vpn () {
-    if [ "$TUNNEL" = wg ]; then
-        cat << EOF > /etc/hotplug.d/iface/30-vpnroute
+    if [ "$TUNNEL" = "wg" ]; then
+        cat << 'EOF' > /etc/hotplug.d/iface/30-vpnroute
 #!/bin/sh
 
 ip route add table vpn default dev wg0
 EOF
-    elif [ "$TUNNEL" = awg ]; then
-        cat << EOF > /etc/hotplug.d/iface/30-vpnroute
+    elif [ "$TUNNEL" = "awg" ]; then
+        cat << 'EOF' > /etc/hotplug.d/iface/30-vpnroute
 #!/bin/sh
 
 ip route add table vpn default dev awg0
 EOF
-    elif [ "$TUNNEL" = singbox ] || [ "$TUNNEL" = ovpn ] || [ "$TUNNEL" = tun2socks ]; then
-        cat << EOF > /etc/hotplug.d/iface/30-vpnroute
+    elif [ "$TUNNEL" = "singbox" ] || [ "$TUNNEL" = "ovpn" ] || [ "$TUNNEL" = "tun2socks" ]; then
+        cat << 'EOF' > /etc/hotplug.d/iface/30-vpnroute
 #!/bin/sh
 
 sleep 10
@@ -29,20 +29,20 @@ ip route add table vpn default dev tun0
 EOF
     fi
 
-    cp /etc/hotplug.d/iface/30-vpnroute /etc/hotplug.d/net/30-vpnroute
+    cp /etc/hotplug.d/iface/30-vpnroute /etc/hotplug.d/net/30-vpnroute 2>/dev/null
 }
 
 add_mark() {
     grep -q "99 vpn" /etc/iproute2/rt_tables || echo '99 vpn' >> /etc/iproute2/rt_tables
     
-    if ! uci show network | grep -q mark0x1; then
+    if ! uci show network 2>/dev/null | grep -q mark0x1; then
         printf "\033[32;1mConfigure mark rule\033[0m\n"
         uci add network rule
         uci set network.@rule[-1].name='mark0x1'
         uci set network.@rule[-1].mark='0x1'
         uci set network.@rule[-1].priority='100'
         uci set network.@rule[-1].lookup='vpn'
-        uci commit
+        uci commit network
     fi
 }
 
@@ -59,59 +59,23 @@ add_tunnel() {
     echo "8) Skip this step"
 
     while true; do
-    read -r -p '' TUNNEL
+        read -r TUNNEL
         case $TUNNEL in 
-
-        1) 
-            TUNNEL=wg
-            break
-            ;;
-
-        2)
-            TUNNEL=ovpn
-            break
-            ;;
-
-        3) 
-            TUNNEL=singbox
-            break
-            ;;
-
-        4) 
-            TUNNEL=tun2socks
-            break
-            ;;
-
-        5) 
-            TUNNEL=wgForYoutube
-            break
-            ;;
-
-        6) 
-            TUNNEL=awg
-            break
-            ;;
-
-        7) 
-            TUNNEL=awgForYoutube
-            break
-            ;;
-
-        8)
-            echo "Skip"
-            TUNNEL=0
-            break
-            ;;
-
-        *)
-            echo "Choose from the following options"
-            ;;
+            1) TUNNEL=wg; break ;;
+            2) TUNNEL=ovpn; break ;;
+            3) TUNNEL=singbox; break ;;
+            4) TUNNEL=tun2socks; break ;;
+            5) TUNNEL=wgForYoutube; break ;;
+            6) TUNNEL=awg; break ;;
+            7) TUNNEL=awgForYoutube; break ;;
+            8) echo "Skip"; TUNNEL=0; break ;;
+            *) echo "Choose from the following options" ;;
         esac
     done
 
-    if [ "$TUNNEL" = 'wg' ]; then
+    if [ "$TUNNEL" = "wg" ]; then
         printf "\033[32;1mConfigure WireGuard\033[0m\n"
-        if opkg list-installed | grep -q wireguard-tools; then
+        if opkg list-installed 2>/dev/null | grep -q wireguard-tools; then
             echo "Wireguard already installed"
         else
             echo "Installed wg..."
@@ -120,10 +84,12 @@ add_tunnel() {
 
         route_vpn
 
-        read -r -p "Enter the private key (from [Interface]):"$'\n' WG_PRIVATE_KEY
+        printf "Enter the private key (from [Interface]):\n"
+        read -r WG_PRIVATE_KEY
 
         while true; do
-            read -r -p "Enter internal IP address with subnet, example 192.168.100.5/24 (from [Interface]):"$'\n' WG_IP
+            printf "Enter internal IP address with subnet, example 192.168.100.5/24 (from [Interface]):\n"
+            read -r WG_IP
             if echo "$WG_IP" | grep -qE '^([0-9]{1,3}\.){3}[0-9]{1,3}/[0-9]+$'; then
                 break
             else
@@ -131,13 +97,17 @@ add_tunnel() {
             fi
         done
 
-        read -r -p "Enter the public key (from [Peer]):"$'\n' WG_PUBLIC_KEY
-        read -r -p "If use PresharedKey, Enter this (from [Peer]). If your don't use leave blank:"$'\n' WG_PRESHARED_KEY
-        read -r -p "Enter Endpoint host without port (Domain or IP) (from [Peer]):"$'\n' WG_ENDPOINT
+        printf "Enter the public key (from [Peer]):\n"
+        read -r WG_PUBLIC_KEY
+        printf "If use PresharedKey, Enter this (from [Peer]). If your don't use leave blank:\n"
+        read -r WG_PRESHARED_KEY
+        printf "Enter Endpoint host without port (Domain or IP) (from [Peer]):\n"
+        read -r WG_ENDPOINT
 
-        read -r -p "Enter Endpoint host port (from [Peer]) [51820]:"$'\n' WG_ENDPOINT_PORT
+        printf "Enter Endpoint host port (from [Peer]) [51820]:\n"
+        read -r WG_ENDPOINT_PORT
         WG_ENDPOINT_PORT=${WG_ENDPOINT_PORT:-51820}
-        if [ "$WG_ENDPOINT_PORT" = '51820' ]; then
+        if [ "$WG_ENDPOINT_PORT" = "51820" ]; then
             echo "$WG_ENDPOINT_PORT"
         fi
         
@@ -147,7 +117,7 @@ add_tunnel() {
         uci set network.wg0.listen_port='51820'
         uci set network.wg0.addresses="$WG_IP"
 
-        if ! uci show network | grep -q wireguard_wg0; then
+        if ! uci show network 2>/dev/null | grep -q wireguard_wg0; then
             uci add network wireguard_wg0
         fi
         uci set network.@wireguard_wg0[0]=wireguard_wg0
@@ -159,11 +129,11 @@ add_tunnel() {
         uci set network.@wireguard_wg0[0].endpoint_host="$WG_ENDPOINT"
         uci set network.@wireguard_wg0[0].allowed_ips='0.0.0.0/0'
         uci set network.@wireguard_wg0[0].endpoint_port="$WG_ENDPOINT_PORT"
-        uci commit
+        uci commit network
     fi
 
-    if [ "$TUNNEL" = 'ovpn' ]; then
-        if opkg list-installed | grep -q openvpn-openssl; then
+    if [ "$TUNNEL" = "ovpn" ]; then
+        if opkg list-installed 2>/dev/null | grep -q openvpn-openssl; then
             echo "OpenVPN already installed"
         else
             echo "Installed openvpn"
@@ -173,8 +143,8 @@ add_tunnel() {
         route_vpn
     fi
 
-    if [ "$TUNNEL" = 'singbox' ]; then
-        if opkg list-installed | grep -q sing-box; then
+    if [ "$TUNNEL" = "singbox" ]; then
+        if opkg list-installed 2>/dev/null | grep -q sing-box; then
             echo "Sing-box already installed"
         else
             AVAILABLE_SPACE=$(df / | awk 'NR>1 { print $4 }')
@@ -186,15 +156,16 @@ add_tunnel() {
                 exit 1
             fi
         fi
-        if grep -q "option enabled '0'" /etc/config/sing-box; then
+        if [ -f /etc/config/sing-box ] && grep -q "option enabled '0'" /etc/config/sing-box; then
             sed -i "s/	option enabled '0'/	option enabled '1'/" /etc/config/sing-box
         fi
-        if grep -q "option user 'sing-box'" /etc/config/sing-box; then
+        if [ -f /etc/config/sing-box ] && grep -q "option user 'sing-box'" /etc/config/sing-box; then
             sed -i "s/	option user 'sing-box'/	option user 'root'/" /etc/config/sing-box
         fi
-        if grep -q "tun0" /etc/sing-box/config.json; then
+        if [ -f /etc/sing-box/config.json ] && grep -q "tun0" /etc/sing-box/config.json; then
             printf "\033[32;1mConfig /etc/sing-box/config.json already exists\033[0m\n"
         else
+            mkdir -p /etc/sing-box
             cat << 'EOF' > /etc/sing-box/config.json
 {
   "log": {
@@ -208,7 +179,7 @@ add_tunnel() {
       "address": ["172.16.250.1/30"],
       "auto_route": false,
       "strict_route": false,
-      "sniff": true 
+      "sniff": true
    }
   ],
   "outbounds": [
@@ -233,25 +204,27 @@ EOF
         route_vpn
     fi
 
-    if [ "$TUNNEL" = 'wgForYoutube' ]; then
+    if [ "$TUNNEL" = "wgForYoutube" ]; then
         add_internal_wg Wireguard
     fi
 
-    if [ "$TUNNEL" = 'awgForYoutube' ]; then
+    if [ "$TUNNEL" = "awgForYoutube" ]; then
         add_internal_wg AmneziaWG
     fi
 
-    if [ "$TUNNEL" = 'awg' ]; then
+    if [ "$TUNNEL" = "awg" ]; then
         printf "\033[32;1mConfigure Amnezia WireGuard\033[0m\n"
 
         install_awg_packages
 
         route_vpn
 
-        read -r -p "Enter the private key (from [Interface]):"$'\n' AWG_PRIVATE_KEY
+        printf "Enter the private key (from [Interface]):\n"
+        read -r AWG_PRIVATE_KEY
 
         while true; do
-            read -r -p "Enter internal IP address with subnet, example 192.168.100.5/24 (Address from [Interface]):"$'\n' AWG_IP
+            printf "Enter internal IP address with subnet, example 192.168.100.5/24 (Address from [Interface]):\n"
+            read -r AWG_IP
             if echo "$AWG_IP" | grep -qE '^([0-9]{1,3}\.){3}[0-9]{1,3}/[0-9]+$'; then
                 break
             else
@@ -259,23 +232,36 @@ EOF
             fi
         done
 
-        read -r -p "Enter Jc value (from [Interface]):"$'\n' AWG_JC
-        read -r -p "Enter Jmin value (from [Interface]):"$'\n' AWG_JMIN
-        read -r -p "Enter Jmax value (from [Interface]):"$'\n' AWG_JMAX
-        read -r -p "Enter S1 value (from [Interface]):"$'\n' AWG_S1
-        read -r -p "Enter S2 value (from [Interface]):"$'\n' AWG_S2
-        read -r -p "Enter H1 value (from [Interface]):"$'\n' AWG_H1
-        read -r -p "Enter H2 value (from [Interface]):"$'\n' AWG_H2
-        read -r -p "Enter H3 value (from [Interface]):"$'\n' AWG_H3
-        read -r -p "Enter H4 value (from [Interface]):"$'\n' AWG_H4
+        printf "Enter Jc value (from [Interface]):\n"
+        read -r AWG_JC
+        printf "Enter Jmin value (from [Interface]):\n"
+        read -r AWG_JMIN
+        printf "Enter Jmax value (from [Interface]):\n"
+        read -r AWG_JMAX
+        printf "Enter S1 value (from [Interface]):\n"
+        read -r AWG_S1
+        printf "Enter S2 value (from [Interface]):\n"
+        read -r AWG_S2
+        printf "Enter H1 value (from [Interface]):\n"
+        read -r AWG_H1
+        printf "Enter H2 value (from [Interface]):\n"
+        read -r AWG_H2
+        printf "Enter H3 value (from [Interface]):\n"
+        read -r AWG_H3
+        printf "Enter H4 value (from [Interface]):\n"
+        read -r AWG_H4
     
-        read -r -p "Enter the public key (from [Peer]):"$'\n' AWG_PUBLIC_KEY
-        read -r -p "If use PresharedKey, Enter this (from [Peer]). If your don't use leave blank:"$'\n' AWG_PRESHARED_KEY
-        read -r -p "Enter Endpoint host without port (Domain or IP) (from [Peer]):"$'\n' AWG_ENDPOINT
+        printf "Enter the public key (from [Peer]):\n"
+        read -r AWG_PUBLIC_KEY
+        printf "If use PresharedKey, Enter this (from [Peer]). If your don't use leave blank:\n"
+        read -r AWG_PRESHARED_KEY
+        printf "Enter Endpoint host without port (Domain or IP) (from [Peer]):\n"
+        read -r AWG_ENDPOINT
 
-        read -r -p "Enter Endpoint host port (from [Peer]) [51820]:"$'\n' AWG_ENDPOINT_PORT
+        printf "Enter Endpoint host port (from [Peer]) [51820]:\n"
+        read -r AWG_ENDPOINT_PORT
         AWG_ENDPOINT_PORT=${AWG_ENDPOINT_PORT:-51820}
-        if [ "$AWG_ENDPOINT_PORT" = '51820' ]; then
+        if [ "$AWG_ENDPOINT_PORT" = "51820" ]; then
             echo "$AWG_ENDPOINT_PORT"
         fi
         
@@ -295,7 +281,7 @@ EOF
         uci set network.awg0.awg_h3="$AWG_H3"
         uci set network.awg0.awg_h4="$AWG_H4"
 
-        if ! uci show network | grep -q amneziawg_awg0; then
+        if ! uci show network 2>/dev/null | grep -q amneziawg_awg0; then
             uci add network amneziawg_awg0
         fi
 
@@ -308,18 +294,17 @@ EOF
         uci set network.@amneziawg_awg0[0].endpoint_host="$AWG_ENDPOINT"
         uci set network.@amneziawg_awg0[0].allowed_ips='0.0.0.0/0'
         uci set network.@amneziawg_awg0[0].endpoint_port="$AWG_ENDPOINT_PORT"
-        uci commit
+        uci commit network
     fi
-
 }
 
 dnsmasqfull() {
-    if opkg list-installed | grep -q dnsmasq-full; then
+    if opkg list-installed 2>/dev/null | grep -q dnsmasq-full; then
         printf "\033[32;1mdnsmasq-full already installed\033[0m\n"
     else
         printf "\033[32;1mInstalled dnsmasq-full\033[0m\n"
         cd /tmp/ && opkg download dnsmasq-full
-        opkg remove dnsmasq && opkg install dnsmasq-full --cache /tmp/
+        opkg remove dnsmasq && opkg install dnsmasq-full
 
         [ -f /etc/config/dhcp-opkg ] && cp /etc/config/dhcp /etc/config/dhcp-old && mv /etc/config/dhcp-opkg /etc/config/dhcp
     fi
@@ -327,7 +312,7 @@ dnsmasqfull() {
 
 dnsmasqconfdir() {
     if [ "$VERSION_ID" -ge 24 ]; then
-        if uci get dhcp.@dnsmasq[0].confdir | grep -q /tmp/dnsmasq.d; then
+        if uci get dhcp.@dnsmasq[0].confdir 2>/dev/null | grep -q /tmp/dnsmasq.d; then
             printf "\033[32;1mconfdir already set\033[0m\n"
         else
             printf "\033[32;1mSetting confdir\033[0m\n"
@@ -344,16 +329,16 @@ remove_forwarding() {
 }
 
 add_zone() {
-    if [ "$TUNNEL" = 0 ]; then
+    if [ "$TUNNEL" = "0" ]; then
         printf "\033[32;1mZone setting skipped\033[0m\n"
-    elif uci show firewall | grep -q "@zone.*name='$TUNNEL'"; then
+    elif uci show firewall 2>/dev/null | grep -q "@zone.*name='$TUNNEL'"; then
         printf "\033[32;1mZone already exist\033[0m\n"
     else
         printf "\033[32;1mCreate zone\033[0m\n"
 
         # Delete exists zone
-        zone_tun_id=$(uci show firewall | grep -E '@zone.*tun0' | awk -F '[][{}]' '{print $2}' | head -n 1)
-        if [ "$zone_tun_id" = 0 ] || [ "$zone_tun_id" = 1 ]; then
+        zone_tun_id=$(uci show firewall 2>/dev/null | grep -E '@zone.*tun0' | awk -F '[][{}]' '{print $2}' | head -n 1)
+        if [ "$zone_tun_id" = "0" ] || [ "$zone_tun_id" = "1" ]; then
             printf "\033[32;1mtun0 zone has an identifier of 0 or 1. That's not ok. Fix your firewall. lan and wan zones should have identifiers 0 and 1. \033[0m\n"
             exit 1
         fi
@@ -361,8 +346,8 @@ add_zone() {
             while uci -q delete firewall.@zone["$zone_tun_id"]; do :; done
         fi
 
-        zone_wg_id=$(uci show firewall | grep -E '@zone.*wg0' | awk -F '[][{}]' '{print $2}' | head -n 1)
-        if [ "$zone_wg_id" = 0 ] || [ "$zone_wg_id" = 1 ]; then
+        zone_wg_id=$(uci show firewall 2>/dev/null | grep -E '@zone.*wg0' | awk -F '[][{}]' '{print $2}' | head -n 1)
+        if [ "$zone_wg_id" = "0" ] || [ "$zone_wg_id" = "1" ]; then
             printf "\033[32;1mwg0 zone has an identifier of 0 or 1. That's not ok. Fix your firewall. lan and wan zones should have identifiers 0 and 1. \033[0m\n"
             exit 1
         fi
@@ -370,8 +355,8 @@ add_zone() {
             while uci -q delete firewall.@zone["$zone_wg_id"]; do :; done
         fi
 
-        zone_awg_id=$(uci show firewall | grep -E '@zone.*awg0' | awk -F '[][{}]' '{print $2}' | head -n 1)
-        if [ "$zone_awg_id" = 0 ] || [ "$zone_awg_id" = 1 ]; then
+        zone_awg_id=$(uci show firewall 2>/dev/null | grep -E '@zone.*awg0' | awk -F '[][{}]' '{print $2}' | head -n 1)
+        if [ "$zone_awg_id" = "0" ] || [ "$zone_awg_id" = "1" ]; then
             printf "\033[32;1mawg0 zone has an identifier of 0 or 1. That's not ok. Fix your firewall. lan and wan zones should have identifiers 0 and 1. \033[0m\n"
             exit 1
         fi
@@ -381,18 +366,18 @@ add_zone() {
 
         uci add firewall zone
         uci set firewall.@zone[-1].name="$TUNNEL"
-        if [ "$TUNNEL" = wg ]; then
+        if [ "$TUNNEL" = "wg" ]; then
             uci set firewall.@zone[-1].network='wg0'
-        elif [ "$TUNNEL" = awg ]; then
+        elif [ "$TUNNEL" = "awg" ]; then
             uci set firewall.@zone[-1].network='awg0'
-        elif [ "$TUNNEL" = singbox ] || [ "$TUNNEL" = ovpn ] || [ "$TUNNEL" = tun2socks ]; then
+        elif [ "$TUNNEL" = "singbox" ] || [ "$TUNNEL" = "ovpn" ] || [ "$TUNNEL" = "tun2socks" ]; then
             uci set firewall.@zone[-1].device='tun0'
         fi
-        if [ "$TUNNEL" = wg ] || [ "$TUNNEL" = awg ] || [ "$TUNNEL" = ovpn ] || [ "$TUNNEL" = tun2socks ]; then
+        if [ "$TUNNEL" = "wg" ] || [ "$TUNNEL" = "awg" ] || [ "$TUNNEL" = "ovpn" ] || [ "$TUNNEL" = "tun2socks" ]; then
             uci set firewall.@zone[-1].forward='REJECT'
             uci set firewall.@zone[-1].output='ACCEPT'
             uci set firewall.@zone[-1].input='REJECT'
-        elif [ "$TUNNEL" = singbox ]; then
+        elif [ "$TUNNEL" = "singbox" ]; then
             uci set firewall.@zone[-1].forward='ACCEPT'
             uci set firewall.@zone[-1].output='ACCEPT'
             uci set firewall.@zone[-1].input='ACCEPT'
@@ -403,35 +388,35 @@ add_zone() {
         uci commit firewall
     fi
     
-    if [ "$TUNNEL" = 0 ]; then
+    if [ "$TUNNEL" = "0" ]; then
         printf "\033[32;1mForwarding setting skipped\033[0m\n"
-    elif uci show firewall | grep -q "@forwarding.*name='$TUNNEL-lan'"; then
+    elif uci show firewall 2>/dev/null | grep -q "@forwarding.*name='$TUNNEL-lan'"; then
         printf "\033[32;1mForwarding already configured\033[0m\n"
     else
         printf "\033[32;1mConfigured forwarding\033[0m\n"
         # Delete exists forwarding
         if [ "$TUNNEL" != "wg" ]; then
-            forward_id=$(uci show firewall | grep -E "@forwarding.*dest='wg'" | awk -F '[][{}]' '{print $2}' | head -n 1)
+            forward_id=$(uci show firewall 2>/dev/null | grep -E "@forwarding.*dest='wg'" | awk -F '[][{}]' '{print $2}' | head -n 1)
             remove_forwarding
         fi
 
         if [ "$TUNNEL" != "awg" ]; then
-            forward_id=$(uci show firewall | grep -E "@forwarding.*dest='awg'" | awk -F '[][{}]' '{print $2}' | head -n 1)
+            forward_id=$(uci show firewall 2>/dev/null | grep -E "@forwarding.*dest='awg'" | awk -F '[][{}]' '{print $2}' | head -n 1)
             remove_forwarding
         fi
 
         if [ "$TUNNEL" != "ovpn" ]; then
-            forward_id=$(uci show firewall | grep -E "@forwarding.*dest='ovpn'" | awk -F '[][{}]' '{print $2}' | head -n 1)
+            forward_id=$(uci show firewall 2>/dev/null | grep -E "@forwarding.*dest='ovpn'" | awk -F '[][{}]' '{print $2}' | head -n 1)
             remove_forwarding
         fi
 
         if [ "$TUNNEL" != "singbox" ]; then
-            forward_id=$(uci show firewall | grep -E "@forwarding.*dest='singbox'" | awk -F '[][{}]' '{print $2}' | head -n 1)
+            forward_id=$(uci show firewall 2>/dev/null | grep -E "@forwarding.*dest='singbox'" | awk -F '[][{}]' '{print $2}' | head -n 1)
             remove_forwarding
         fi
 
         if [ "$TUNNEL" != "tun2socks" ]; then
-            forward_id=$(uci show firewall | grep -E "@forwarding.*dest='tun2socks'" | awk -F '[][{}]' '{print $2}' | head -n 1)
+            forward_id=$(uci show firewall 2>/dev/null | grep -E "@forwarding.*dest='tun2socks'" | awk -F '[][{}]' '{print $2}' | head -n 1)
             remove_forwarding
         fi
 
@@ -446,26 +431,26 @@ add_zone() {
 }
 
 show_manual() {
-    if [ "$TUNNEL" = tun2socks ]; then
+    if [ "$TUNNEL" = "tun2socks" ]; then
         printf "\033[42;1mZone for tun2socks cofigured. But you need to set up the tunnel yourself.\033[0m\n"
         echo "Use this manual: https://cli.co/VNZISEM"
-    elif [ "$TUNNEL" = ovpn ]; then
+    elif [ "$TUNNEL" = "ovpn" ]; then
         printf "\033[42;1mZone for OpenVPN cofigured. But you need to set up the tunnel yourself.\033[0m\n"
         echo "Use this manual: https://itdog.info/nastrojka-klienta-openvpn-na-openwrt/"
     fi
 }
 
 add_set() {
-    if uci show firewall | grep -q "@ipset.*name='vpn_domains'"; then
+    if uci show firewall 2>/dev/null | grep -q "@ipset.*name='vpn_domains'"; then
         printf "\033[32;1mSet already exist\033[0m\n"
     else
         printf "\033[32;1mCreate set\033[0m\n"
         uci add firewall ipset
         uci set firewall.@ipset[-1].name='vpn_domains'
         uci set firewall.@ipset[-1].match='dst_net'
-        uci commit
+        uci commit firewall
     fi
-    if uci show firewall | grep -q "@rule.*name='mark_domains'"; then
+    if uci show firewall 2>/dev/null | grep -q "@rule.*name='mark_domains'"; then
         printf "\033[32;1mRule for set already exist\033[0m\n"
     else
         printf "\033[32;1mCreate rule set\033[0m\n"
@@ -479,7 +464,7 @@ add_set() {
         uci set firewall.@rule[-1].set_mark='0x1'
         uci set firewall.@rule[-1].target='MARK'
         uci set firewall.@rule[-1].family='ipv4'
-        uci commit
+        uci commit firewall
     fi
 }
 
@@ -495,42 +480,27 @@ add_dns_resolver() {
     echo "3) Stubby (36K)"
 
     while true; do
-    read -r -p '' DNS_RESOLVER
+        read -r DNS_RESOLVER
         case $DNS_RESOLVER in 
-
-        1) 
-            echo "Skiped"
-            break
-            ;;
-
-        2)
-            DNS_RESOLVER=DNSCRYPT
-            break
-            ;;
-
-        3) 
-            DNS_RESOLVER=STUBBY
-            break
-            ;;
-
-        *)
-            echo "Choose from the following options"
-            ;;
+            1) echo "Skiped"; break ;;
+            2) DNS_RESOLVER=DNSCRYPT; break ;;
+            3) DNS_RESOLVER=STUBBY; break ;;
+            *) echo "Choose from the following options" ;;
         esac
     done
 
-    if [ "$DNS_RESOLVER" = 'DNSCRYPT' ]; then
-        if opkg list-installed | grep -q dnscrypt-proxy2; then
+    if [ "$DNS_RESOLVER" = "DNSCRYPT" ]; then
+        if opkg list-installed 2>/dev/null | grep -q dnscrypt-proxy2; then
             printf "\033[32;1mDNSCrypt2 already installed\033[0m\n"
         else
             printf "\033[32;1mInstalled dnscrypt-proxy2\033[0m\n"
             opkg install dnscrypt-proxy2
-            if grep -q "# server_names" /etc/dnscrypt-proxy2/dnscrypt-proxy.toml; then
+            if [ -f /etc/dnscrypt-proxy2/dnscrypt-proxy.toml ] && grep -q "# server_names" /etc/dnscrypt-proxy2/dnscrypt-proxy.toml; then
                 sed -i "s/^# server_names =.*/server_names = ['google', 'cloudflare', 'scaleway-fr', 'yandex']/g" /etc/dnscrypt-proxy2/dnscrypt-proxy.toml
             fi
 
             printf "\033[32;1mDNSCrypt restart\033[0m\n"
-            service dnscrypt-proxy restart
+            /etc/init.d/dnscrypt-proxy restart
             printf "\033[32;1mDNSCrypt needs to load the relays list. Please wait\033[0m\n"
             sleep 30
 
@@ -542,7 +512,6 @@ add_dns_resolver() {
                 uci commit dhcp
                 
                 printf "\033[32;1mDnsmasq restart\033[0m\n"
-
                 /etc/init.d/dnsmasq restart
             else
                 printf "\033[31;1mDNSCrypt not download list on /etc/dnscrypt-proxy2. Repeat install DNSCrypt by script.\033[0m\n"
@@ -550,10 +519,10 @@ add_dns_resolver() {
         fi
     fi
 
-    if [ "$DNS_RESOLVER" = 'STUBBY' ]; then
+    if [ "$DNS_RESOLVER" = "STUBBY" ]; then
         printf "\033[32;1mConfigure Stubby\033[0m\n"
 
-        if opkg list-installed | grep -q stubby; then
+        if opkg list-installed 2>/dev/null | grep -q stubby; then
             printf "\033[32;1mStubby already installed\033[0m\n"
         else
             printf "\033[32;1mInstalled stubby\033[0m\n"
@@ -567,7 +536,6 @@ add_dns_resolver() {
             uci commit dhcp
 
             printf "\033[32;1mDnsmasq restart\033[0m\n"
-
             /etc/init.d/dnsmasq restart
         fi
     fi
@@ -575,7 +543,7 @@ add_dns_resolver() {
 
 add_packages() {
     for package in curl nano; do
-        if opkg list-installed | grep -q "^$package "; then
+        if opkg list-installed 2>/dev/null | grep -q "^$package "; then
             printf "\033[32;1m$package already installed\033[0m\n"
         else
             printf "\033[32;1mInstalling $package...\033[0m\n"
@@ -600,45 +568,25 @@ add_getdomains() {
     echo "4) Skip script creation"
 
     while true; do
-    read -r -p '' COUNTRY
+        read -r COUNTRY
         case $COUNTRY in 
-
-        1) 
-            COUNTRY=russia_inside
-            break
-            ;;
-
-        2)
-            COUNTRY=russia_outside
-            break
-            ;;
-
-        3) 
-            COUNTRY=ukraine
-            break
-            ;;
-
-        4) 
-            echo "Skiped"
-            COUNTRY=0
-            break
-            ;;
-
-        *)
-            echo "Choose from the following options"
-            ;;
+            1) COUNTRY=russia_inside; break ;;
+            2) COUNTRY=russia_outside; break ;;
+            3) COUNTRY=ukraine; break ;;
+            4) echo "Skiped"; COUNTRY=0; break ;;
+            *) echo "Choose from the following options" ;;
         esac
     done
 
-    if [ "$COUNTRY" = 'russia_inside' ]; then
-        EOF_DOMAINS="DOMAINS=https://raw.githubusercontent.com/itdoginfo/allow-domains/main/Russia/inside-dnsmasq-nfset.lst"
-    elif [ "$COUNTRY" = 'russia_outside' ]; then
-        EOF_DOMAINS="DOMAINS=https://raw.githubusercontent.com/itdoginfo/allow-domains/main/Russia/outside-dnsmasq-nfset.lst"
-    elif [ "$COUNTRY" = 'ukraine' ]; then
-        EOF_DOMAINS="DOMAINS=https://raw.githubusercontent.com/itdoginfo/allow-domains/main/Ukraine/inside-dnsmasq-nfset.lst"
+    if [ "$COUNTRY" = "russia_inside" ]; then
+        DOMAINS_URL="https://raw.githubusercontent.com/itdoginfo/allow-domains/main/Russia/inside-dnsmasq-nfset.lst"
+    elif [ "$COUNTRY" = "russia_outside" ]; then
+        DOMAINS_URL="https://raw.githubusercontent.com/itdoginfo/allow-domains/main/Russia/outside-dnsmasq-nfset.lst"
+    elif [ "$COUNTRY" = "ukraine" ]; then
+        DOMAINS_URL="https://raw.githubusercontent.com/itdoginfo/allow-domains/main/Ukraine/inside-dnsmasq-nfset.lst"
     fi
 
-    if [ "$COUNTRY" != '0' ]; then
+    if [ "$COUNTRY" != "0" ]; then
         printf "\033[32;1mCreate script /etc/init.d/getdomains\033[0m\n"
 
         cat << EOF > /etc/init.d/getdomains
@@ -646,18 +594,16 @@ add_getdomains() {
 
 START=99
 
-start () {
-    $EOF_DOMAINS
-EOF
-        cat << 'EOF' >> /etc/init.d/getdomains
+start() {
+    DOMAINS="$DOMAINS_URL"
     count=0
     while true; do
         if curl -m 3 github.com; then
-            curl -f "$DOMAINS" --output /tmp/dnsmasq.d/domains.lst
+            curl -f "\$DOMAINS" --output /tmp/dnsmasq.d/domains.lst
             break
         else
-            echo "GitHub is not available. Check the internet availability [$count]"
-            count=$((count+1))
+            echo "GitHub is not available. Check the internet availability [\$count]"
+            count=\$((count+1))
         fi
     done
 
@@ -679,21 +625,20 @@ EOF
         fi
 
         printf "\033[32;1mStart script\033[0m\n"
-
         /etc/init.d/getdomains start
     fi
 }
 
 add_internal_wg() {
     PROTOCOL_NAME=$1
-    printf "\033[32;1mConfigure ${PROTOCOL_NAME}\033[0m\n"
-    if [ "$PROTOCOL_NAME" = 'Wireguard' ]; then
+    printf "\033[32;1mConfigure %s\033[0m\n" "$PROTOCOL_NAME"
+    if [ "$PROTOCOL_NAME" = "Wireguard" ]; then
         INTERFACE_NAME="wg1"
         CONFIG_NAME="wireguard_wg1"
         PROTO="wireguard"
         ZONE_NAME="wg_internal"
 
-        if opkg list-installed | grep -q wireguard-tools; then
+        if opkg list-installed 2>/dev/null | grep -q wireguard-tools; then
             echo "Wireguard already installed"
         else
             echo "Installed wg..."
@@ -701,7 +646,7 @@ add_internal_wg() {
         fi
     fi
 
-    if [ "$PROTOCOL_NAME" = 'AmneziaWG' ]; then
+    if [ "$PROTOCOL_NAME" = "AmneziaWG" ]; then
         INTERFACE_NAME="awg1"
         CONFIG_NAME="amneziawg_awg1"
         PROTO="amneziawg"
@@ -710,10 +655,12 @@ add_internal_wg() {
         install_awg_packages
     fi
 
-    read -r -p "Enter the private key (from [Interface]):"$'\n' WG_PRIVATE_KEY_INT
+    printf "Enter the private key (from [Interface]):\n"
+    read -r WG_PRIVATE_KEY_INT
 
     while true; do
-        read -r -p "Enter internal IP address with subnet, example 192.168.100.5/24 (from [Interface]):"$'\n' WG_IP
+        printf "Enter internal IP address with subnet, example 192.168.100.5/24 (from [Interface]):\n"
+        read -r WG_IP
         if echo "$WG_IP" | grep -qE '^([0-9]{1,3}\.){3}[0-9]{1,3}/[0-9]+$'; then
             break
         else
@@ -721,26 +668,39 @@ add_internal_wg() {
         fi
     done
 
-    read -r -p "Enter the public key (from [Peer]):"$'\n' WG_PUBLIC_KEY_INT
-    read -r -p "If use PresharedKey, Enter this (from [Peer]). If your don't use leave blank:"$'\n' WG_PRESHARED_KEY_INT
-    read -r -p "Enter Endpoint host without port (Domain or IP) (from [Peer]):"$'\n' WG_ENDPOINT_INT
+    printf "Enter the public key (from [Peer]):\n"
+    read -r WG_PUBLIC_KEY_INT
+    printf "If use PresharedKey, Enter this (from [Peer]). If your don't use leave blank:\n"
+    read -r WG_PRESHARED_KEY_INT
+    printf "Enter Endpoint host without port (Domain or IP) (from [Peer]):\n"
+    read -r WG_ENDPOINT_INT
 
-    read -r -p "Enter Endpoint host port (from [Peer]) [51820]:"$'\n' WG_ENDPOINT_PORT_INT
+    printf "Enter Endpoint host port (from [Peer]) [51820]:\n"
+    read -r WG_ENDPOINT_PORT_INT
     WG_ENDPOINT_PORT_INT=${WG_ENDPOINT_PORT_INT:-51820}
-    if [ "$WG_ENDPOINT_PORT_INT" = '51820' ]; then
+    if [ "$WG_ENDPOINT_PORT_INT" = "51820" ]; then
         echo "$WG_ENDPOINT_PORT_INT"
     fi
 
-    if [ "$PROTOCOL_NAME" = 'AmneziaWG' ]; then
-        read -r -p "Enter Jc value (from [Interface]):"$'\n' AWG_JC
-        read -r -p "Enter Jmin value (from [Interface]):"$'\n' AWG_JMIN
-        read -r -p "Enter Jmax value (from [Interface]):"$'\n' AWG_JMAX
-        read -r -p "Enter S1 value (from [Interface]):"$'\n' AWG_S1
-        read -r -p "Enter S2 value (from [Interface]):"$'\n' AWG_S2
-        read -r -p "Enter H1 value (from [Interface]):"$'\n' AWG_H1
-        read -r -p "Enter H2 value (from [Interface]):"$'\n' AWG_H2
-        read -r -p "Enter H3 value (from [Interface]):"$'\n' AWG_H3
-        read -r -p "Enter H4 value (from [Interface]):"$'\n' AWG_H4
+    if [ "$PROTOCOL_NAME" = "AmneziaWG" ]; then
+        printf "Enter Jc value (from [Interface]):\n"
+        read -r AWG_JC
+        printf "Enter Jmin value (from [Interface]):\n"
+        read -r AWG_JMIN
+        printf "Enter Jmax value (from [Interface]):\n"
+        read -r AWG_JMAX
+        printf "Enter S1 value (from [Interface]):\n"
+        read -r AWG_S1
+        printf "Enter S2 value (from [Interface]):\n"
+        read -r AWG_S2
+        printf "Enter H1 value (from [Interface]):\n"
+        read -r AWG_H1
+        printf "Enter H2 value (from [Interface]):\n"
+        read -r AWG_H2
+        printf "Enter H3 value (from [Interface]):\n"
+        read -r AWG_H3
+        printf "Enter H4 value (from [Interface]):\n"
+        read -r AWG_H4
     fi
     
     uci set network."${INTERFACE_NAME}"=interface
@@ -749,7 +709,7 @@ add_internal_wg() {
     uci set network."${INTERFACE_NAME}".listen_port='51821'
     uci set network."${INTERFACE_NAME}".addresses="$WG_IP"
 
-    if [ "$PROTOCOL_NAME" = 'AmneziaWG' ]; then
+    if [ "$PROTOCOL_NAME" = "AmneziaWG" ]; then
         uci set network."${INTERFACE_NAME}".awg_jc="$AWG_JC"
         uci set network."${INTERFACE_NAME}".awg_jmin="$AWG_JMIN"
         uci set network."${INTERFACE_NAME}".awg_jmax="$AWG_JMAX"
@@ -761,7 +721,7 @@ add_internal_wg() {
         uci set network."${INTERFACE_NAME}".awg_h4="$AWG_H4"
     fi
 
-    if ! uci show network | grep -q "$CONFIG_NAME"; then
+    if ! uci show network 2>/dev/null | grep -q "$CONFIG_NAME"; then
         uci add network "$CONFIG_NAME"
     fi
 
@@ -778,17 +738,17 @@ add_internal_wg() {
 
     grep -q "110 vpninternal" /etc/iproute2/rt_tables || echo '110 vpninternal' >> /etc/iproute2/rt_tables
 
-    if ! uci show network | grep -q mark0x2; then
+    if ! uci show network 2>/dev/null | grep -q mark0x2; then
         printf "\033[32;1mConfigure mark rule\033[0m\n"
         uci add network rule
         uci set network.@rule[-1].name='mark0x2'
         uci set network.@rule[-1].mark='0x2'
         uci set network.@rule[-1].priority='110'
         uci set network.@rule[-1].lookup='vpninternal'
-        uci commit
+        uci commit network
     fi
 
-    if ! uci show network | grep -q vpn_route_internal; then
+    if ! uci show network 2>/dev/null | grep -q vpn_route_internal; then
         printf "\033[32;1mAdd route\033[0m\n"
         uci set network.vpn_route_internal=route
         uci set network.vpn_route_internal.name='vpninternal'
@@ -798,7 +758,7 @@ add_internal_wg() {
         uci commit network
     fi
 
-    if ! uci show firewall | grep -q "@zone.*name='${ZONE_NAME}'"; then
+    if ! uci show firewall 2>/dev/null | grep -q "@zone.*name='${ZONE_NAME}'"; then
         printf "\033[32;1mZone Create\033[0m\n"
         uci add firewall zone
         uci set firewall.@zone[-1].name="$ZONE_NAME"
@@ -812,18 +772,18 @@ add_internal_wg() {
         uci commit firewall
     fi
 
-    if ! uci show firewall | grep -q "@forwarding.*name='${ZONE_NAME}'"; then
+    if ! uci show firewall 2>/dev/null | grep -q "@forwarding.*name='${ZONE_NAME}'"; then
         printf "\033[32;1mConfigured forwarding\033[0m\n"
         uci add firewall forwarding
         uci set firewall.@forwarding[-1]=forwarding
         uci set firewall.@forwarding[-1].name="${ZONE_NAME}-lan"
-        uci set firewall.@forwarding[-1].dest="${ZONE_NAME}"
+        uci set firewall.@forwarding[-1].dest="$ZONE_NAME"
         uci set firewall.@forwarding[-1].src='lan'
         uci set firewall.@forwarding[-1].family='ipv4'
         uci commit firewall
     fi
 
-    if uci show firewall | grep -q "@ipset.*name='vpn_domains_internal'"; then
+    if uci show firewall 2>/dev/null | grep -q "@ipset.*name='vpn_domains_internal'"; then
         printf "\033[32;1mSet already exist\033[0m\n"
     else
         printf "\033[32;1mCreate set\033[0m\n"
@@ -833,7 +793,7 @@ add_internal_wg() {
         uci commit firewall
     fi
 
-    if uci show firewall | grep -q "@rule.*name='mark_domains_intenal'"; then
+    if uci show firewall 2>/dev/null | grep -q "@rule.*name='mark_domains_intenal'"; then
         printf "\033[32;1mRule for set already exist\033[0m\n"
     else
         printf "\033[32;1mCreate rule set\033[0m\n"
@@ -850,7 +810,7 @@ add_internal_wg() {
         uci commit firewall
     fi
 
-    if uci show dhcp | grep -q "@ipset.*name='vpn_domains_internal'"; then
+    if uci show dhcp 2>/dev/null | grep -q "@ipset.*name='vpn_domains_internal'"; then
         printf "\033[32;1mDomain on vpn_domains_internal already exist\033[0m\n"
     else
         printf "\033[32;1mCreate domain for vpn_domains_internal\033[0m\n"
@@ -865,10 +825,12 @@ add_internal_wg() {
         uci commit dhcp
     fi
 
-    sed -i "/done/a sed -i '/youtube.com\\\|ytimg.com\\\|ggpht.com\\\|googlevideo.com\\\|googleapis.com\\\|youtubekids.com/d' /tmp/dnsmasq.d/domains.lst" "/etc/init.d/getdomains"
+    if [ -f /etc/init.d/getdomains ]; then
+        sed -i "/done/a sed -i '/youtube.com\\\|ytimg.com\\\|ggpht.com\\\|googlevideo.com\\\|googleapis.com\\\|youtubekids.com/d' /tmp/dnsmasq.d/domains.lst" /etc/init.d/getdomains
+    fi
 
-    service dnsmasq restart
-    service network restart
+    /etc/init.d/dnsmasq restart
+    /etc/init.d/network restart
 
     exit 0
 }
@@ -886,7 +848,7 @@ install_awg_packages() {
     AWG_DIR="/tmp/amneziawg"
     mkdir -p "$AWG_DIR"
 
-    if opkg list-installed | grep -q amneziawg-tools; then
+    if opkg list-installed 2>/dev/null | grep -q amneziawg-tools; then
         echo "amneziawg-tools already installed"
     else
         AMNEZIAWG_TOOLS_FILENAME="amneziawg-tools${PKGPOSTFIX}"
@@ -910,7 +872,7 @@ install_awg_packages() {
         fi
     fi
     
-    if opkg list-installed | grep -q kmod-amneziawg; then
+    if opkg list-installed 2>/dev/null | grep -q kmod-amneziawg; then
         echo "kmod-amneziawg already installed"
     else
         KMOD_AMNEZIAWG_FILENAME="kmod-amneziawg${PKGPOSTFIX}"
@@ -934,7 +896,7 @@ install_awg_packages() {
         fi
     fi
     
-    if opkg list-installed | grep -q luci-app-amneziawg; then
+    if opkg list-installed 2>/dev/null | grep -q luci-app-amneziawg; then
         echo "luci-app-amneziawg already installed"
     else
         LUCI_APP_AMNEZIAWG_FILENAME="luci-app-amneziawg${PKGPOSTFIX}"

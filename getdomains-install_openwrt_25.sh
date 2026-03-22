@@ -577,11 +577,11 @@ add_dns_resolver() {
 
 add_packages() {
     for package in curl nano; do
-        if apk list-installed | grep -q "^$package "; then
+        if apk info "$package" >/dev/null 2>&1; then
             printf "\033[32;1m$package already installed\033[0m\n"
         else
             printf "\033[32;1mInstalling $package...\033[0m\n"
-            apk install "$package"
+            apk add "$package"
             
             if "$package" --version >/dev/null 2>&1; then
                 printf "\033[32;1m$package was successfully installed and available\033[0m\n"

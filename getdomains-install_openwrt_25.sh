@@ -526,8 +526,8 @@ add_dns_resolver() {
         fi
 
         # Перезапуск dnscrypt-proxy2
-        if [ -x /etc/init.d/dnscrypt-proxy ]; then
-            /etc/init.d/dnscrypt-proxy restart
+        if [ -x /etc/init.d/dnscrypt-proxy2 ]; then
+            /etc/init.d/dnscrypt-proxy2 restart
         else
             printf "\033[33;1mCannot restart dnscrypt-proxy automatically. Restart manually\033[0m\n"
         fi

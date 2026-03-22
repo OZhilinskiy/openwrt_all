@@ -494,36 +494,34 @@ add_dns_resolver() {
     # DNSCrypt
     # ----------------------
     if [ "$DNS_RESOLVER" = 'DNSCRYPT' ]; then
-        if apk list -I | grep -q '^dnscrypt-proxy'; then
+        if apk list -I | grep -q '^dnscrypt-proxy2'; then
             printf "\033[32;1mDNSCrypt2 already installed\033[0m\n"
         else
-            printf "\033[32;1mInstalling dnscrypt-proxy\033[0m\n"
+            printf "\033[32;1mInstalling dnscrypt-proxy2\033[0m\n"
             apk update
-            apk add dnscrypt-proxy
+            apk add dnscrypt-proxy2
             if [ $? -ne 0 ]; then
-                printf "\033[31;1mError: failed to install dnscrypt-proxy\033[0m\n"
+                printf "\033[31;1mError: failed to install dnscrypt-proxy2\033[0m\n"
                 return 1
             fi
         fi
 
         # Настройка server_names
-        if [ -f /etc/dnscrypt-proxy/dnscrypt-proxy.toml ]; then
-            sed -i "s/^#* server_names =.*/server_names = ['google', 'cloudflare', 'scaleway-fr', 'yandex']/" /etc/dnscrypt-proxy/dnscrypt-proxy.toml
+        if [ -f /etc/dnscrypt-proxy2/dnscrypt-proxy.toml ]; then
+            sed -i "s/^#* server_names =.*/server_names = ['google', 'cloudflare', 'scaleway-fr', 'yandex']/" /etc/dnscrypt-proxy2/dnscrypt-proxy.toml
         fi
 
-        # Перезапуск DNSCrypt (для apk / s6 или rc.d)
+        # Перезапуск dnscrypt-proxy2
         if [ -x /etc/init.d/dnscrypt-proxy ]; then
             /etc/init.d/dnscrypt-proxy restart
-        elif command -v rc.d >/dev/null 2>&1; then
-            rc.d restart dnscrypt-proxy
         else
-            printf "\033[33;1mWarning: cannot restart dnscrypt-proxy automatically. Restart manually\033[0m\n"
+            printf "\033[33;1mCannot restart dnscrypt-proxy automatically. Restart manually\033[0m\n"
         fi
 
         printf "\033[32;1mWaiting 30s for relays list to load...\033[0m\n"
         sleep 30
 
-        if [ -f /etc/dnscrypt-proxy/relays.md ]; then
+        if [ -f /etc/dnscrypt-proxy2/relays.md ]; then
             uci set dhcp.@dnsmasq[0].noresolv="1"
             uci -q delete dhcp.@dnsmasq[0].server
             uci add_list dhcp.@dnsmasq[0].server="127.0.0.53#53"
@@ -531,7 +529,7 @@ add_dns_resolver() {
             uci commit dhcp
             /etc/init.d/dnsmasq restart
         else
-            printf "\033[31;1mDNSCrypt relays list not found. Retry installation\033[0m\n"
+            printf "\033[31;1mDNSCrypt2 relays list not found. Retry installation\033[0m\n"
         fi
     fi
 

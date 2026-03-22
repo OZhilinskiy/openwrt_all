@@ -600,9 +600,9 @@ add_packages() {
 add_getdomains() {
     echo "Choose your country:"
     echo "Select:"
-    echo "1) Russia inside. You are inside Russia"
-    echo "2) Russia outside. You are outside of Russia, but you need access to Russian resources"
-    echo "3) Ukraine. uablacklist.net list"
+    echo "1) Russia inside (you are inside Russia)"
+    echo "2) Russia outside (you are outside Russia, need access to Russian resources)"
+    echo "3) Ukraine (uablacklist.net list)"
     echo "4) Skip script creation"
 
     while true; do
@@ -631,41 +631,27 @@ add_getdomains() {
         esac
     done
 
-    if [ "$COUNTRY" = "0" ]; then
-        return
+    if [ "$COUNTRY" = "russia_inside" ]; then
+        DOMAINS_URL="https://raw.githubusercontent.com/itdoginfo/allow-domains/main/Russia/inside-dnsmasq-nfset.lst"
+    elif [ "$COUNTRY" = "russia_outside" ]; then
+        DOMAINS_URL="https://raw.githubusercontent.com/itdoginfo/allow-domains/main/Russia/outside-dnsmasq-nfset.lst"
+    elif [ "$COUNTRY" = "ukraine" ]; then
+        DOMAINS_URL="https://raw.githubusercontent.com/itdoginfo/allow-domains/main/Ukraine/inside-dnsmasq-nfset.lst"
     fi
 
-    # ----------------------
-    # Выбираем URL с доменами
-    # ----------------------
-    DOMAINS_URL=""
-    case $COUNTRY in
-        russia_inside)
-            DOMAINS_URL="https://raw.githubusercontent.com/itdoginfo/allow-domains/main/Russia/inside-dnsmasq-nfset.lst"
-            ;;
-        russia_outside)
-            DOMAINS_URL="https://raw.githubusercontent.com/itdoginfo/allow-domains/main/Russia/outside-dnsmasq-nfset.lst"
-            ;;
-        ukraine)
-            DOMAINS_URL="https://raw.githubusercontent.com/itdoginfo/allow-domains/main/Ukraine/inside-dnsmasq-nfset.lst"
-            ;;
-    esac
+    if [ "$COUNTRY" != "0" ]; then
+        printf "\033[32;1mCreating /etc/init.d/getdomains script\033[0m\n"
 
-    printf "\033[32;1mCreate script /etc/init.d/getdomains\033[0m\n"
-
-    cat << EOF > /etc/init.d/getdomains
+        cat << EOF > /etc/init.d/getdomains
 #!/bin/sh /etc/rc.common
-
 START=99
 
 start() {
-    DOMAINS="$DOMAINS_URL"
-    
     mkdir -p /tmp/dnsmasq.d
     count=0
     while true; do
-        if curl -m 3 github.com >/dev/null 2>&1; then
-            curl -sf \$DOMAINS --output /tmp/dnsmasq.d/domains.lst
+        if curl -m 3 -s https://github.com >/dev/null; then
+            curl -sf "$DOMAINS_URL" -o /tmp/dnsmasq.d/domains.lst
             break
         else
             echo "GitHub is not available. Check internet connectivity [$count]"
@@ -676,29 +662,25 @@ start() {
 
     if dnsmasq --conf-file=/tmp/dnsmasq.d/domains.lst --test 2>&1 | grep -q "syntax check OK"; then
         /etc/init.d/dnsmasq restart
-        echo "Dnsmasq restarted successfully"
+        echo "Domains list applied successfully"
     else
-        echo "Error in domains list. Dnsmasq not restarted"
+        echo "Failed to apply domains list. Check /tmp/dnsmasq.d/domains.lst"
     fi
 }
 EOF
 
-    chmod +x /etc/init.d/getdomains
-    /etc/init.d/getdomains enable
+        chmod +x /etc/init.d/getdomains
+        /etc/init.d/getdomains enable
 
-    # ----------------------
-    # Настройка cron
-    # ----------------------
-    if ! crontab -l 2>/dev/null | grep -q "/etc/init.d/getdomains"; then
-        ( crontab -l 2>/dev/null; echo "0 */8 * * * /etc/init.d/getdomains start" ) | crontab -
-        printf "\033[32;1mCron configured to run every 8 hours\033[0m\n"
-        /etc/init.d/cron restart
-    else
-        printf "\033[32;1mCrontab already configured\033[0m\n"
+        # Добавляем в crontab, если нет
+        if ! crontab -l 2>/dev/null | grep -q "/etc/init.d/getdomains"; then
+            (crontab -l 2>/dev/null; echo "0 */8 * * * /etc/init.d/getdomains start") | crontab -
+            /etc/init.d/cron restart
+        fi
+
+        printf "\033[32;1mStarting getdomains script now\033[0m\n"
+        /etc/init.d/getdomains start
     fi
-
-    printf "\033[32;1mStart script now\033[0m\n"
-    /etc/init.d/getdomains start
 }
 
 add_internal_wg() {

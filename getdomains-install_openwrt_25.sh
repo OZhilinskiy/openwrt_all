@@ -4,7 +4,7 @@
 
 check_repo() {
     printf "\033[32;1mChecking OpenWrt repo availability...\033[0m\n"
-    apk update | grep -q "Failed to download" && printf "\033[32;1mopkg failed. Check internet or date. Command for force ntp sync: ntpd -p ptbtime1.ptb.de\033[0m\n" && exit 1
+    apk update | grep -q "Failed to download" && printf "\033[32;1mapk failed. Check internet or date. Command for force ntp sync: ntpd -p ptbtime1.ptb.de\033[0m\n" && exit 1
 }
 
 route_vpn () {
@@ -577,11 +577,11 @@ add_dns_resolver() {
 
 add_packages() {
     for package in curl nano; do
-        if opkg list-installed | grep -q "^$package "; then
+        if apk list-installed | grep -q "^$package "; then
             printf "\033[32;1m$package already installed\033[0m\n"
         else
             printf "\033[32;1mInstalling $package...\033[0m\n"
-            opkg install "$package"
+            apk install "$package"
             
             if "$package" --version >/dev/null 2>&1; then
                 printf "\033[32;1m$package was successfully installed and available\033[0m\n"

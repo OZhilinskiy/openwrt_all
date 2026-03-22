@@ -456,91 +456,99 @@ add_set() {
 add_dns_resolver() {
     echo "Configure DNSCrypt2 or Stubby? It does matter if your ISP is spoofing DNS requests"
     DISK=$(df -m / | awk 'NR==2{ print $2 }')
-    if [[ "$DISK" -lt 32 ]]; then 
-        printf "\033[31;1mYour router a disk have less than 32MB. It is not recommended to install DNSCrypt, it takes 10MB\033[0m\n"
+    if [ "$DISK" -lt 32 ]; then 
+        printf "\033[31;1mYour router disk has less than 32MB. It is not recommended to install DNSCrypt, it takes ~10MB\033[0m\n"
     fi
+
     echo "Select:"
     echo "1) No [Default]"
-    echo "2) DNSCrypt2 (10.7M)"
-    echo "3) Stubby (36K)"
+    echo "2) DNSCrypt2 (~10MB)"
+    echo "3) Stubby (~36KB)"
 
     while true; do
-    read -r -p '' DNS_RESOLVER
+        read -r -p '' DNS_RESOLVER
         case $DNS_RESOLVER in 
-
-        1) 
-            echo "Skiped"
-            break
+        1|"")
+            echo "Skipped"
+            return
             ;;
-
-        2)
+        2) 
             DNS_RESOLVER=DNSCRYPT
             break
             ;;
-
         3) 
             DNS_RESOLVER=STUBBY
             break
             ;;
-
         *)
             echo "Choose from the following options"
             ;;
         esac
     done
 
-    if [ "$DNS_RESOLVER" == 'DNSCRYPT' ]; then
-        if opkg list-installed | grep -q dnscrypt-proxy2; then
+    # ----------------------
+    # DNSCrypt
+    # ----------------------
+    if [ "$DNS_RESOLVER" = 'DNSCRYPT' ]; then
+        if apk list -I | grep -q dnscrypt-proxy; then
             printf "\033[32;1mDNSCrypt2 already installed\033[0m\n"
         else
-            printf "\033[32;1mInstalled dnscrypt-proxy2\033[0m\n"
-            opkg install dnscrypt-proxy2
-            if grep -q "# server_names" /etc/dnscrypt-proxy2/dnscrypt-proxy.toml; then
-                sed -i "s/^# server_names =.*/server_names = [\'google\', \'cloudflare\', \'scaleway-fr\', \'yandex\']/g" /etc/dnscrypt-proxy2/dnscrypt-proxy.toml
+            printf "\033[32;1mInstalling dnscrypt-proxy\033[0m\n"
+            apk update
+            apk add dnscrypt-proxy
+            if [ $? -ne 0 ]; then
+                printf "\033[31;1mError: failed to install dnscrypt-proxy\033[0m\n"
+                return 1
             fi
+        fi
 
-            printf "\033[32;1mDNSCrypt restart\033[0m\n"
-            service dnscrypt-proxy restart
-            printf "\033[32;1mDNSCrypt needs to load the relays list. Please wait\033[0m\n"
-            sleep 30
+        # Настройка
+        if grep -q "# server_names" /etc/dnscrypt-proxy/dnscrypt-proxy.toml; then
+            sed -i "s/^# server_names =.*/server_names = ['google', 'cloudflare', 'scaleway-fr', 'yandex']/g" /etc/dnscrypt-proxy/dnscrypt-proxy.toml
+        fi
 
-            if [ -f /etc/dnscrypt-proxy2/relays.md ]; then
-                uci set dhcp.@dnsmasq[0].noresolv="1"
-                uci -q delete dhcp.@dnsmasq[0].server
-                uci add_list dhcp.@dnsmasq[0].server="127.0.0.53#53"
-                uci add_list dhcp.@dnsmasq[0].server='/use-application-dns.net/'
-                uci commit dhcp
-                
-                printf "\033[32;1mDnsmasq restart\033[0m\n"
+        printf "\033[32;1mRestart DNSCrypt\033[0m\n"
+        /etc/init.d/dnscrypt-proxy restart
+        printf "\033[32;1mWaiting for relays list to load...\033[0m\n"
+        sleep 30
 
-                /etc/init.d/dnsmasq restart
-            else
-                printf "\033[31;1mDNSCrypt not download list on /etc/dnscrypt-proxy2. Repeat install DNSCrypt by script.\033[0m\n"
-            fi
-    fi
-
-    fi
-
-    if [ "$DNS_RESOLVER" == 'STUBBY' ]; then
-        printf "\033[32;1mConfigure Stubby\033[0m\n"
-
-        if opkg list-installed | grep -q stubby; then
-            printf "\033[32;1mStubby already installed\033[0m\n"
-        else
-            printf "\033[32;1mInstalled stubby\033[0m\n"
-            opkg install stubby
-
-            printf "\033[32;1mConfigure Dnsmasq for Stubby\033[0m\n"
+        if [ -f /etc/dnscrypt-proxy/relays.md ]; then
             uci set dhcp.@dnsmasq[0].noresolv="1"
             uci -q delete dhcp.@dnsmasq[0].server
-            uci add_list dhcp.@dnsmasq[0].server="127.0.0.1#5453"
+            uci add_list dhcp.@dnsmasq[0].server="127.0.0.53#53"
             uci add_list dhcp.@dnsmasq[0].server='/use-application-dns.net/'
             uci commit dhcp
-
-            printf "\033[32;1mDnsmasq restart\033[0m\n"
-
             /etc/init.d/dnsmasq restart
+        else
+            printf "\033[31;1mDNSCrypt did not download relays list. Retry installation\033[0m\n"
         fi
+    fi
+
+    # ----------------------
+    # Stubby
+    # ----------------------
+    if [ "$DNS_RESOLVER" = 'STUBBY' ]; then
+        printf "\033[32;1mConfigure Stubby\033[0m\n"
+
+        if apk list -I | grep -q stubby; then
+            printf "\033[32;1mStubby already installed\033[0m\n"
+        else
+            printf "\033[32;1mInstalling Stubby\033[0m\n"
+            apk update
+            apk add stubby
+            if [ $? -ne 0 ]; then
+                printf "\033[31;1mError: failed to install Stubby\033[0m\n"
+                return 1
+            fi
+        fi
+
+        printf "\033[32;1mConfigure Dnsmasq for Stubby\033[0m\n"
+        uci set dhcp.@dnsmasq[0].noresolv="1"
+        uci -q delete dhcp.@dnsmasq[0].server
+        uci add_list dhcp.@dnsmasq[0].server="127.0.0.1#5453"
+        uci add_list dhcp.@dnsmasq[0].server='/use-application-dns.net/'
+        uci commit dhcp
+        /etc/init.d/dnsmasq restart
     fi
 }
 
@@ -970,7 +978,7 @@ dnsmasqfull
 
 dnsmasqconfdir
 
-#add_dns_resolver
+add_dns_resolver
 
 #add_getdomains
 

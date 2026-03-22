@@ -220,25 +220,29 @@ add_tunnel() {
 }
 
 dnsmasqfull() {
-    apk update
-
-    # проверка установлен ли dnsmasq
-    if apk list -I | grep -q "^dnsmasq"; then
-        printf "\033[32;1mdnsmasq is already installed\033[0m\n"
+    # Проверка, установлен ли dnsmasq-full
+    if apk list -I | grep -q '^dnsmasq-full'; then
+        printf "\033[32;1mdnsmasq-full already installed\033[0m\n"
     else
-        printf "\033[32;1mInstalling dnsmasq...\033[0m\n"
-        apk add dnsmasq
+        printf "\033[32;1mInstalling dnsmasq-full\033[0m\n"
+
+        # Обновление списка пакетов и установка
+        apk update
+        apk add dnsmasq-full
         if [ $? -ne 0 ]; then
-            printf "\033[31;1mError: failed to install dnsmasq\033[0m\n"
+            printf "\033[31;1mError: failed to install dnsmasq-full\033[0m\n"
             return 1
         fi
-    fi
 
-    # замена конфига если есть
-    if [ -f /etc/config/dhcp-opkg ]; then
-        cp /etc/config/dhcp /etc/config/dhcp-old
-        mv /etc/config/dhcp-opkg /etc/config/dhcp
-        printf "\033[32;1mConfig replaced\033[0m\n"
+        # Замена конфигурации, если есть подготовленный файл
+        if [ -f /etc/config/dhcp-apk ]; then
+            cp /etc/config/dhcp /etc/config/dhcp-old
+            mv /etc/config/dhcp-apk /etc/config/dhcp
+            printf "\033[32;1mConfiguration /etc/config/dhcp replaced\033[0m\n"
+        fi
+
+        # Перезапуск dnsmasq
+        /etc/init.d/dnsmasq restart
     fi
 }
 

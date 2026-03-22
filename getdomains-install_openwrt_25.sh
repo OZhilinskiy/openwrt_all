@@ -500,9 +500,17 @@ add_dns_resolver() {
     # Устанавливаем dnscrypt-proxy2
     # -----------------------------
     if [ "$DNS_RESOLVER" = 'DNSCRYPT' ]; then
-        if apk list -I | grep -q '^dnscrypt-proxy2'; then
-            printf "\033[32;1mDNSCrypt2 already installed\033[0m\n"
-        else
+
+        # Если dnscrypt-proxy2 не установлен
+        if ! apk list -I | grep -q '^dnscrypt-proxy2'; then
+
+            # Если установлен старый dnscrypt-proxy, удаляем его
+            if apk list -I | grep -q '^dnscrypt-proxy'; then
+                printf "\033[33;1mOld dnscrypt-proxy found. Removing it to avoid conflicts...\033[0m\n"
+                apk del dnscrypt-proxy
+            fi
+
+            # Устанавливаем dnscrypt-proxy2
             printf "\033[32;1mInstalling dnscrypt-proxy2\033[0m\n"
             apk update
             apk add dnscrypt-proxy2
@@ -510,6 +518,8 @@ add_dns_resolver() {
                 printf "\033[31;1mError: failed to install dnscrypt-proxy2\033[0m\n"
                 return 1
             fi
+        else
+            printf "\033[32;1mDNSCrypt2 already installed\033[0m\n"
         fi
 
         # Настройка server_names
@@ -518,7 +528,6 @@ add_dns_resolver() {
         fi
 
         # Перезапуск dnscrypt-proxy2
-        # Проверяем и перезапускаем DNSCrypt
         if [ -x /etc/init.d/dnscrypt-proxy2 ]; then
             /etc/init.d/dnscrypt-proxy2 restart
         elif [ -x /etc/init.d/dnscrypt-proxy ]; then
@@ -975,7 +984,7 @@ add_dns_resolver
 
 add_getdomains
 
-#printf "\033[32;1mRestart network\033[0m\n"
-#/etc/init.d/network restart
+printf "\033[32;1mRestart network\033[0m\n"
+/etc/init.d/network restart
 
 printf "\033[32;1mDone\033[0m\n"

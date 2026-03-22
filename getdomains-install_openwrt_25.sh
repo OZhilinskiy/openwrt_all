@@ -493,6 +493,20 @@ add_dns_resolver() {
     # ----------------------
     # DNSCrypt
     # ----------------------
+    # -----------------------------
+    # Удаляем старый dnscrypt-proxy, если он есть
+    # -----------------------------
+    if apk list -I | grep -q dnscrypt-proxy; then
+        printf "\033[33;1mRemoving old dnscrypt-proxy\033[0m\n"
+        apk del dnscrypt-proxy
+        # Удаляем остаточные файлы, если остались
+        rm -f /etc/init.d/dnscrypt-proxy
+        rm -f /usr/sbin/dnscrypt-proxy
+    fi
+
+    # -----------------------------
+    # Устанавливаем dnscrypt-proxy2
+    # -----------------------------
     if [ "$DNS_RESOLVER" = 'DNSCRYPT' ]; then
         if apk list -I | grep -q '^dnscrypt-proxy2'; then
             printf "\033[32;1mDNSCrypt2 already installed\033[0m\n"

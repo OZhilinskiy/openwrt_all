@@ -591,64 +591,57 @@ add_packages() {
 
 add_getdomains() {
     echo "Choose your country:"
-    echo "Select:"
     echo "1) Russia inside. You are inside Russia"
-    echo "2) Russia outside. You are outside Russia, need access to Russian resources"
+    echo "2) Russia outside. You are outside of Russia, but need access to Russian resources"
     echo "3) Ukraine. uablacklist.net list"
     echo "4) Skip script creation"
 
     while true; do
-        read -r -p '' COUNTRY
+        read -r -p 'Select: ' COUNTRY
         case $COUNTRY in
             1) COUNTRY=russia_inside; break ;;
             2) COUNTRY=russia_outside; break ;;
             3) COUNTRY=ukraine; break ;;
-            4|"") echo "Skipped"; COUNTRY=0; break ;;
-            *) echo "Choose from the following options" ;;
+            4) echo "Skipped"; COUNTRY=0; break ;;
+            *) echo "Choose from the following options";;
         esac
     done
 
-    if [ "$COUNTRY" = "russia_inside" ]; then
+    # Устанавливаем URL для выбранной страны
+    if [ "$COUNTRY" = 'russia_inside' ]; then
         DOMAINS_URL="https://raw.githubusercontent.com/itdoginfo/allow-domains/main/Russia/inside-dnsmasq-nfset.lst"
-    elif [ "$COUNTRY" = "russia_outside" ]; then
+    elif [ "$COUNTRY" = 'russia_outside' ]; then
         DOMAINS_URL="https://raw.githubusercontent.com/itdoginfo/allow-domains/main/Russia/outside-dnsmasq-nfset.lst"
-    elif [ "$COUNTRY" = "ukraine" ]; then
+    elif [ "$COUNTRY" = 'ukraine' ]; then
         DOMAINS_URL="https://raw.githubusercontent.com/itdoginfo/allow-domains/main/Ukraine/inside-dnsmasq-nfset.lst"
     fi
 
-    if [ "$COUNTRY" != "0" ]; then
-        printf "\033[32;1mCreating /etc/init.d/getdomains script\033[0m\n"
+    if [ "$COUNTRY" != '0' ]; then
+        printf "\033[32;1mCreating script /etc/init.d/getdomains\033[0m\n"
+
+        mkdir -p /tmp/dnsmasq.d
 
         cat << EOF > /etc/init.d/getdomains
 #!/bin/sh /etc/rc.common
 START=99
 
 start() {
-    mkdir -p /tmp/dnsmasq.d
     count=0
-    max_retries=10
-
-    while [ \$count -lt \$max_retries ]; do
-        if curl -sf "$DOMAINS_URL" -o /tmp/dnsmasq.d/domains.lst; then
-            echo "Domains list downloaded successfully"
+    while true; do
+        if wget --timeout=5 -q --spider https://github.com; then
+            wget -q -O /tmp/dnsmasq.d/domains.lst $DOMAINS_URL
             break
         else
-            echo "Failed to download domains list. Attempt \$((count+1))/$max_retries"
+            echo "Cannot reach GitHub. Retrying... [\$count]"
             count=\$((count+1))
-            sleep 5
+            sleep 10
         fi
     done
 
-    if [ ! -f /tmp/dnsmasq.d/domains.lst ]; then
-        echo "Cannot download domains list. Exiting"
-        return 1
-    fi
-
     if dnsmasq --conf-file=/tmp/dnsmasq.d/domains.lst --test 2>&1 | grep -q "syntax check OK"; then
         /etc/init.d/dnsmasq restart
-        echo "Domains applied successfully"
     else
-        echo "Domains list has errors. Check /tmp/dnsmasq.d/domains.lst"
+        echo "Error: syntax check failed for /tmp/dnsmasq.d/domains.lst"
     fi
 }
 EOF
@@ -656,11 +649,9 @@ EOF
         chmod +x /etc/init.d/getdomains
         /etc/init.d/getdomains enable
 
-        # Добавление в crontab если нет
-        if ! crontab -l 2>/dev/null | grep -q "/etc/init.d/getdomains"; then
-            (crontab -l 2>/dev/null; echo "0 */8 * * * /etc/init.d/getdomains start") | crontab -
-            /etc/init.d/cron restart
-        fi
+        # Настроим cron, если еще не добавлен
+        (crontab -l 2>/dev/null | grep -v '/etc/init.d/getdomains'; echo "0 */8 * * * /etc/init.d/getdomains start") | crontab -
+        /etc/init.d/cron restart
 
         printf "\033[32;1mStarting getdomains script now\033[0m\n"
         /etc/init.d/getdomains start
@@ -964,7 +955,7 @@ printf "\033[31;1mAll actions performed here cannot be rolled back automatically
 
 check_repo
 
-#add_packages
+add_packages
 
 add_tunnel
 

@@ -302,19 +302,14 @@ remove_forwarding() {
     fi
 }
 
-# -------------------------------
-# Добавление VPN зоны и forwarding
-# -------------------------------
 add_zone() {
-    if [ "$TUNNEL" == 0 ]; then
+    if [ "$TUNNEL" = 0 ]; then
         printf "\033[32;1mZone setting skipped\033[0m\n"
         printf "\033[32;1mForwarding setting skipped\033[0m\n"
         return
     fi
 
-    # -------------------------------
     # Проверка и удаление старых зон
-    # -------------------------------
     for zone in tun0 wg0 awg0; do
         zone_id=$(uci show firewall | grep -E "@zone.*$zone" | awk -F '[][{}]' '{print $2}' | head -n1)
         if [ ! -z "$zone_id" ] && [ "$zone_id" != "0" ] && [ "$zone_id" != "1" ]; then
@@ -322,9 +317,7 @@ add_zone() {
         fi
     done
 
-    # -------------------------------
     # Создание новой зоны
-    # -------------------------------
     if uci show firewall | grep -q "@zone.*name='$TUNNEL'"; then
         printf "\033[32;1mZone '$TUNNEL' already exists\033[0m\n"
     else
@@ -332,21 +325,25 @@ add_zone() {
         ZONE_IDX=$(uci add firewall zone)
         uci set firewall.@zone[$ZONE_IDX].name="$TUNNEL"
 
-        case $TUNNEL in
+        case "$TUNNEL" in
             wg) uci set firewall.@zone[$ZONE_IDX].network='wg0';;
             awg) uci set firewall.@zone[$ZONE_IDX].network='awg0';;
             singbox|ovpn|tun2socks) uci set firewall.@zone[$ZONE_IDX].device='tun0';;
         esac
 
-        if [[ $TUNNEL =~ ^(wg|awg|ovpn|tun2socks)$ ]]; then
-            uci set firewall.@zone[$ZONE_IDX].forward='REJECT'
-            uci set firewall.@zone[$ZONE_IDX].output='ACCEPT'
-            uci set firewall.@zone[$ZONE_IDX].input='REJECT'
-        elif [ "$TUNNEL" == "singbox" ]; then
-            uci set firewall.@zone[$ZONE_IDX].forward='ACCEPT'
-            uci set firewall.@zone[$ZONE_IDX].output='ACCEPT'
-            uci set firewall.@zone[$ZONE_IDX].input='ACCEPT'
-        fi
+        # Forward/Input/Output по типу туннеля
+        case "$TUNNEL" in
+            wg|awg|ovpn|tun2socks)
+                uci set firewall.@zone[$ZONE_IDX].forward='REJECT'
+                uci set firewall.@zone[$ZONE_IDX].output='ACCEPT'
+                uci set firewall.@zone[$ZONE_IDX].input='REJECT'
+            ;;
+            singbox)
+                uci set firewall.@zone[$ZONE_IDX].forward='ACCEPT'
+                uci set firewall.@zone[$ZONE_IDX].output='ACCEPT'
+                uci set firewall.@zone[$ZONE_IDX].input='ACCEPT'
+            ;;
+        esac
 
         uci set firewall.@zone[$ZONE_IDX].masq='1'
         uci set firewall.@zone[$ZONE_IDX].mtu_fix='1'
@@ -354,9 +351,7 @@ add_zone() {
         uci commit firewall
     fi
 
-    # -------------------------------
     # Настройка forwarding
-    # -------------------------------
     if uci show firewall | grep -q "@forwarding.*name='$TUNNEL-lan'"; then
         printf "\033[32;1mForwarding for '$TUNNEL-lan' already exists\033[0m\n"
     else
@@ -364,7 +359,7 @@ add_zone() {
 
         # Удаляем старые forwarding к другим туннелям
         for fwd in wg awg ovpn singbox tun2socks; do
-            if [[ $TUNNEL != "$fwd" ]]; then
+            if [ "$TUNNEL" != "$fwd" ]; then
                 forward_id=$(uci show firewall | grep -E "@forwarding.*dest='$fwd'" | awk -F '[][{}]' '{print $2}' | head -n1)
                 remove_forwarding
             fi

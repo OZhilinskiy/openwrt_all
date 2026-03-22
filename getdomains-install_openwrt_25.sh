@@ -494,15 +494,7 @@ add_dns_resolver() {
     # DNSCrypt
     # ----------------------
     # -----------------------------
-    # Удаляем старый dnscrypt-proxy, если он есть
-    # -----------------------------
-    if apk list -I | grep -q dnscrypt-proxy; then
-        printf "\033[33;1mRemoving old dnscrypt-proxy\033[0m\n"
-        apk del dnscrypt-proxy
-        # Удаляем остаточные файлы, если остались
-        rm -f /etc/init.d/dnscrypt-proxy
-        rm -f /usr/sbin/dnscrypt-proxy
-    fi
+    
 
     # -----------------------------
     # Устанавливаем dnscrypt-proxy2
@@ -598,20 +590,20 @@ add_packages() {
 }
 
 add_getdomains() {
-    echo "Choose you country"
+    echo "Choose your country:"
     echo "Select:"
     echo "1) Russia inside. You are inside Russia"
-    echo "2) Russia outside. You are outside of Russia, but you need access to Russian resources"
+    echo "2) Russia outside. You are outside Russia, need access to Russian resources"
     echo "3) Ukraine. uablacklist.net list"
     echo "4) Skip script creation"
 
     while true; do
-        read -r COUNTRY
-        case $COUNTRY in 
-            1) COUNTRY="russia_inside"; break ;;
-            2) COUNTRY="russia_outside"; break ;;
-            3) COUNTRY="ukraine"; break ;;
-            4) echo "Skiped"; COUNTRY=0; break ;;
+        read -r -p '' COUNTRY
+        case $COUNTRY in
+            1) COUNTRY=russia_inside; break ;;
+            2) COUNTRY=russia_outside; break ;;
+            3) COUNTRY=ukraine; break ;;
+            4|"") echo "Skipped"; COUNTRY=0; break ;;
             *) echo "Choose from the following options" ;;
         esac
     done
@@ -625,127 +617,53 @@ add_getdomains() {
     fi
 
     if [ "$COUNTRY" != "0" ]; then
-        printf "\033[32;1mCreate script /etc/init.d/getdomains\033[0m\n"
-        
-        mkdir -p /tmp/dnsmasq.d
+        printf "\033[32;1mCreating /etc/init.d/getdomains script\033[0m\n"
 
-        cat << 'EOF' > /etc/init.d/getdomains
+        cat << EOF > /etc/init.d/getdomains
 #!/bin/sh /etc/rc.common
-
 START=99
 
-check_internet() {
-    # Проверяем интернет через разные методы
-    if ping -c 1 -W 3 8.8.8.8 >/dev/null 2>&1; then
-        return 0
-    fi
-    if ping -c 1 -W 3 1.1.1.1 >/dev/null 2>&1; then
-        return 0
-    fi
-    if curl -s -m 3 http://captive.apple.com >/dev/null 2>&1; then
-        return 0
-    fi
-    return 1
-}
-
 start() {
-    DOMAINS_URL="https://raw.githubusercontent.com/itdoginfo/allow-domains/main/Russia/inside-dnsmasq-nfset.lst"
+    mkdir -p /tmp/dnsmasq.d
     count=0
     max_retries=10
-    
-    echo "Waiting for internet connection..."
-    
-    while [ $count -lt $max_retries ]; do
-        if check_internet; then
-            echo "Internet connection detected, downloading domains list..."
+
+    while [ \$count -lt \$max_retries ]; do
+        if curl -sf "$DOMAINS_URL" -o /tmp/dnsmasq.d/domains.lst; then
+            echo "Domains list downloaded successfully"
             break
         else
-            count=$((count + 1))
-            echo "No internet connection, waiting... [$count/$max_retries]"
-            sleep 10
+            echo "Failed to download domains list. Attempt \$((count+1))/$max_retries"
+            count=\$((count+1))
+            sleep 5
         fi
     done
-    
-    if [ $count -ge $max_retries ]; then
-        echo "ERROR: No internet connection after $max_retries attempts"
-        exit 1
+
+    if [ ! -f /tmp/dnsmasq.d/domains.lst ]; then
+        echo "Cannot download domains list. Exiting"
+        return 1
     fi
-    
-    # Пробуем загрузить список доменов
-    echo "Downloading from: $DOMAINS_URL"
-    
-    # Пробуем curl с разными опциями
-    if curl -f -L -m 30 --retry 3 --retry-delay 5 "$DOMAINS_URL" -o /tmp/dnsmasq.d/domains.lst 2>/dev/null; then
-        echo "Domains list downloaded successfully"
-    elif wget -T 30 -t 3 -O /tmp/dnsmasq.d/domains.lst "$DOMAINS_URL" 2>/dev/null; then
-        echo "Domains list downloaded successfully (wget)"
-    else
-        echo "ERROR: Failed to download domains list"
-        echo "URL: $DOMAINS_URL"
-        exit 1
-    fi
-    
-    # Проверяем, что файл не пустой
-    if [ ! -s /tmp/dnsmasq.d/domains.lst ]; then
-        echo "ERROR: Downloaded file is empty"
-        exit 1
-    fi
-    
-    # Проверяем синтаксис
+
     if dnsmasq --conf-file=/tmp/dnsmasq.d/domains.lst --test 2>&1 | grep -q "syntax check OK"; then
-        echo "Domain list syntax OK, restarting dnsmasq"
         /etc/init.d/dnsmasq restart
+        echo "Domains applied successfully"
     else
-        echo "WARNING: Domain list syntax error, but file was saved"
-        # Показываем первые несколько строк для диагностики
-        echo "First 5 lines of downloaded file:"
-        head -5 /tmp/dnsmasq.d/domains.lst
+        echo "Domains list has errors. Check /tmp/dnsmasq.d/domains.lst"
     fi
 }
 EOF
 
-        # Заменяем URL в скрипте на выбранный
-        sed -i "s|DOMAINS_URL=\".*\"|DOMAINS_URL=\"$DOMAINS_URL\"|" /etc/init.d/getdomains
-
         chmod +x /etc/init.d/getdomains
-        
-        # Включение автозапуска
-        if /etc/init.d/getdomains enabled 2>/dev/null; then
-            printf "\033[32;1mgetdomains already enabled\033[0m\n"
-        else
-            /etc/init.d/getdomains enable
-            printf "\033[32;1mgetdomains enabled for auto-start\033[0m\n"
+        /etc/init.d/getdomains enable
+
+        # Добавление в crontab если нет
+        if ! crontab -l 2>/dev/null | grep -q "/etc/init.d/getdomains"; then
+            (crontab -l 2>/dev/null; echo "0 */8 * * * /etc/init.d/getdomains start") | crontab -
+            /etc/init.d/cron restart
         fi
 
-        # Настройка crontab
-        if crontab -l 2>/dev/null | grep -q /etc/init.d/getdomains; then
-            printf "\033[32;1mCrontab already configured\033[0m\n"
-        else
-            printf "\033[32;1mConfiguring crontab (updates every 8 hours)\033[0m\n"
-            (crontab -l 2>/dev/null; echo "0 */8 * * * /etc/init.d/getdomains start") | crontab - 2>/dev/null
-            # Запускаем cron если он не запущен
-            if ! pgrep crond >/dev/null 2>&1 && ! pgrep cron >/dev/null 2>&1; then
-                /etc/init.d/cron start 2>/dev/null || /etc/init.d/crond start 2>/dev/null
-            fi
-        fi
-
-        printf "\033[32;1mStarting getdomains script...\033[0m\n"
-        
-        # Запускаем скрипт в фоне, чтобы не блокировать выполнение
-        /etc/init.d/getdomains start &
-        
-        # Даем скрипту время на выполнение
-        sleep 5
-        
-        # Проверяем результат
-        if [ -f /tmp/dnsmasq.d/domains.lst ] && [ -s /tmp/dnsmasq.d/domains.lst ]; then
-            printf "\033[32;1mDomain list downloaded successfully!\033[0m\n"
-            lines=$(wc -l < /tmp/dnsmasq.d/domains.lst)
-            printf "\033[32;1mLoaded %s domain rules\033[0m\n" "$lines"
-        else
-            printf "\033[33;1mDomain list not downloaded yet. Script is running in background.\033[0m\n"
-            printf "\033[33;1mCheck manually: /etc/init.d/getdomains start\033[0m\n"
-        fi
+        printf "\033[32;1mStarting getdomains script now\033[0m\n"
+        /etc/init.d/getdomains start
     fi
 }
 

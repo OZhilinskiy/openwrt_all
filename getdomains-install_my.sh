@@ -11,74 +11,56 @@ WG_ENDPOINT_IP=""
 
 #!/bin/sh
 
-# ---------------- ГЛОБАЛЬНЫЕ ПЕРЕМЕННЫЕ ----------------
-DOMAINS_URL="https://raw.githubusercontent.com/itdoginfo/allow-domains/main/Russia/inside-dnsmasq-nfset.lst"
-
 setup_split_vpn_domains() {
-    echo "🔹 Setting up split-tunnel for VPN domains..."
+    DOMAINS_URL="https://raw.githubusercontent.com/itdoginfo/allow-domains/main/Russia/inside-dnsmasq-nfset.lst"
+    echo "Using NFT domain list: $DOMAINS_URL"
 
-    # ---------------- Пакеты ----------------
-    apk add ipset curl dnsmasq-full 2>/dev/null
+    # ---------------- пакеты ----------------
+    apk add curl dnsmasq-full nftables 2>/dev/null
 
-    # ---------------- Таблица маршрутов ----------------
+    # ---------------- таблица маршрутов ----------------
     grep -q '^200 vpn' /etc/iproute2/rt_tables 2>/dev/null || echo "200 vpn" >> /etc/iproute2/rt_tables
     ip rule add fwmark 1 table vpn 2>/dev/null || true
 
-    # ---------------- Директория dnsmasq ----------------
+    # ---------------- nft set ----------------
+    echo "Creating nft set..."
+
+    nft list table inet fw4 >/dev/null 2>&1 || nft add table inet fw4
+
+    nft list set inet fw4 vpn_domains >/dev/null 2>&1 || nft add set inet fw4 vpn_domains '{ type ipv4_addr; flags dynamic; }'
+
+    # ---------------- правило маркировки ----------------
+    nft list chain inet fw4 mangle_prerouting >/dev/null 2>&1 || \
+        nft add chain inet fw4 mangle_prerouting '{ type filter hook prerouting priority mangle; }'
+
+    nft add rule inet fw4 mangle_prerouting ip daddr @vpn_domains meta mark set 0x1 2>/dev/null
+
+    # ---------------- dnsmasq ----------------
     mkdir -p /tmp/dnsmasq.d
 
-    # ---------------- IPSET ----------------
-    ipset list vpn_domains >/dev/null 2>&1 || ipset create vpn_domains hash:ip
-
-    if ! uci show firewall | grep -q "@ipset.*name='vpn_domains'"; then
-        uci add firewall ipset
-        uci set firewall.@ipset[-1].name='vpn_domains'
-        uci set firewall.@ipset[-1].match='dest_ip'
-        uci set firewall.@ipset[-1].family='ipv4'
-        uci commit firewall
-    fi
-
-    # ---------------- Правило fwmark ----------------
-    if ! uci show firewall | grep -q "@rule.*name='mark_domains'"; then
-        uci add firewall rule
-        uci set firewall.@rule[-1]=rule
-        uci set firewall.@rule[-1].name='mark_domains'
-        uci set firewall.@rule[-1].src='lan'
-        uci set firewall.@rule[-1].dest='*'
-        uci set firewall.@rule[-1].proto='all'
-        uci set firewall.@rule[-1].ipset='vpn_domains'
-        uci set firewall.@rule[-1].set_mark='0x1'
-        uci set firewall.@rule[-1].target='MARK'
-        uci set firewall.@rule[-1].family='ipv4'
-        uci commit firewall
-    fi
-    /etc/init.d/firewall restart
-
-    # ---------------- Основной список доменов ----------------
     echo "Downloading domain list..."
-    curl -s "$DOMAINS_URL" | sed 's/\/[^/]*$/\/vpn_domains/' > /tmp/dnsmasq.d/vpn_domains.conf
+    curl -s "$DOMAINS_URL" > /tmp/dnsmasq.d/vpn_domains.conf
 
-    # ---------------- Кастомные домены ----------------
+    # ---------------- кастомные домены ----------------
     if uci show dhcp | grep -q "config ipset"; then
         uci show dhcp | grep "config ipset" | while read -r line; do
             DOMAIN=$(echo "$line" | sed -n "s/.*list domain '\([^']*\)'.*/\1/p")
-            [ -n "$DOMAIN" ] && echo "ipset=/$DOMAIN/vpn_domains" >> /tmp/dnsmasq.d/vpn_domains.conf
+            [ -n "$DOMAIN" ] && echo "nftset=/$DOMAIN/inet#fw4#vpn_domains" >> /tmp/dnsmasq.d/vpn_domains.conf
         done
     fi
 
     /etc/init.d/dnsmasq restart
 
-    # ---------------- Таблица маршрутов через wg0 ----------------
-    # Сбрасываем default route через wg0, если был full-tunnel
+    # ---------------- убираем full-tunnel ----------------
     ip route del default dev wg0 2>/dev/null || true
     uci set network.@wireguard_wg0[0].route_allowed_ips='0'
     uci commit network
     /etc/init.d/network restart
 
-    # Добавляем default route в таблицу vpn
+    # ---------------- маршрут через wg ----------------
     ip route add table vpn default dev wg0 2>/dev/null || true
 
-    # ---------------- Hotplug wg ----------------
+    # ---------------- hotplug ----------------
     cat << 'EOF' > /etc/hotplug.d/iface/30-vpnroute
 #!/bin/sh
 [ "$ACTION" = "ifup" ] || exit 0
@@ -88,31 +70,7 @@ fi
 EOF
     chmod +x /etc/hotplug.d/iface/30-vpnroute
 
-    # ---------------- Автообновление ----------------
-    cat << EOF > /etc/init.d/update-vpn-domains
-#!/bin/sh /etc/rc.common
-START=99
-start() {
-    echo "Updating VPN domain list..."
-    curl -s "$DOMAINS_URL" | sed 's/\/[^/]*$/\/vpn_domains/' > /tmp/dnsmasq.d/vpn_domains.conf
-
-    if uci show dhcp | grep -q "config ipset"; then
-        uci show dhcp | grep "config ipset" | while read -r line; do
-            DOMAIN=\$(echo "\$line" | sed -n "s/.*list domain '\([^']*\)'.*/\1/p")
-            [ -n "\$DOMAIN" ] && echo "ipset=/\$DOMAIN/vpn_domains" >> /tmp/dnsmasq.d/vpn_domains.conf
-        done
-    fi
-
-    /etc/init.d/dnsmasq restart
-}
-EOF
-    chmod +x /etc/init.d/update-vpn-domains
-    /etc/init.d/update-vpn-domains enable
-    (crontab -l 2>/dev/null | grep -v update-vpn-domains; echo "0 */6 * * * /etc/init.d/update-vpn-domains start") | crontab -
-    /etc/init.d/cron restart
-
-    echo "✅ Split VPN domains setup complete!"
-    echo "👉 Add your custom domains via /etc/config/dhcp in config ipset section"
+    echo "✅ NFT split-tunnel configured!"
 }
 
 # ---------------- ФУНКЦИЯ ROUTE ----------------

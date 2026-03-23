@@ -53,10 +53,11 @@ route_vpn() {
         echo "WG endpoint IP: $WG_ENDPOINT_IP"
 
         # WAN gateway
+        WAN_IF=$(ip route | awk '/default/ {print $5}' | head -n1)
         WAN_GW=$(ip route | awk '/default/ {print $3}' | head -n1)
 
         # маршрут к серверу WG через WAN
-        ip route add $WG_ENDPOINT_IP via $WAN_GW dev wan 2>/dev/null || true
+        ip route add $WG_ENDPOINT_IP via $WAN_GW dev $WAN_IF 2>/dev/null || true
 
         # default route через wg0
         ip route replace default dev wg0
@@ -152,7 +153,7 @@ add_wireguard() {
     uci set network.@wireguard_wg0[-1].public_key="$WG_PUBLIC_KEY"
     [ -n "$WG_PRESHARED_KEY" ] && uci set network.@wireguard_wg0[-1].preshared_key="$WG_PRESHARED_KEY"
     uci set network.@wireguard_wg0[-1].allowed_ips='0.0.0.0/0'
-    uci set network.@wireguard_wg0[-1].route_allowed_ips='0'
+    uci set network.@wireguard_wg0[-1].route_allowed_ips='1'
     uci set network.@wireguard_wg0[-1].persistent_keepalive='25'
     uci set network.@wireguard_wg0[-1].endpoint_host="$WG_ENDPOINT"
     uci set network.@wireguard_wg0[-1].endpoint_port="$WG_ENDPOINT_PORT"

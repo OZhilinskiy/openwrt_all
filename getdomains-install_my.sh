@@ -90,14 +90,14 @@ add_wireguard() {
     echo "Configure WireGuard tunnel with optional DNSCrypt-proxy2"
 
     # ---------------- Установка пакетов ----------------
-    if ! apk info wireguard-tools >/dev/null 2>&1; then
+    if ! apk info -e wireguard-tools >/dev/null 2>&1; then
         echo "Installing WireGuard..."
         apk add wireguard-tools luci-proto-wireguard
     else
         echo "WireGuard already installed"
     fi
 
-    if ! apk info dnscrypt-proxy2 >/dev/null 2>&1; then
+    if ! apk info -e dnscrypt-proxy2 >/dev/null 2>&1; then
         echo "Installing DNSCrypt-proxy2..."
         apk add dnscrypt-proxy2
     else

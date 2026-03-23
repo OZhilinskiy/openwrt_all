@@ -1,5 +1,8 @@
 #!/bin/sh
 
+# -------------------
+# Функция маршрутизации
+# -------------------
 route_vpn() {
     echo "Select routing mode:"
     echo "1) Route ALL traffic via WireGuard"
@@ -15,7 +18,6 @@ route_vpn() {
         esac
     done
 
-    # ---------------- FULL TUNNEL ----------------
     if [ "$MODE" = "all" ]; then
         echo "Configuring FULL tunnel via WG..."
 
@@ -24,24 +26,30 @@ route_vpn() {
         uci set network.@wireguard_wg0[0].allowed_ips='0.0.0.0/0'
         uci commit network
 
+        /etc/init.d/network restart
+
         # получаем endpoint
         WG_ENDPOINT=$(uci get network.@wireguard_wg0[0].endpoint_host)
         WG_PORT=$(uci get network.@wireguard_wg0[0].endpoint_port)
 
-        # получаем IP endpoint
-        WG_ENDPOINT_IP=$(nslookup "$WG_ENDPOINT" 2>/dev/null | awk '/^Address: / {print $2}' | tail -n1)
+        # резолв через локальный DNSCrypt или fallback
+        WG_ENDPOINT_IP=$(nslookup "$WG_ENDPOINT" 127.0.0.1 2>/dev/null | awk '/^Address: / {print $2}' | tail -n1)
+        if [ -z "$WG_ENDPOINT_IP" ]; then
+            echo "Local DNS failed, trying 8.8.8.8..."
+            WG_ENDPOINT_IP=$(nslookup "$WG_ENDPOINT" 8.8.8.8 2>/dev/null | awk '/^Address: / {print $2}' | tail -n1)
+        fi
 
         if [ -z "$WG_ENDPOINT_IP" ]; then
-            echo "ERROR: cannot resolve WG endpoint"
-            return 1
+            echo "ERROR: cannot resolve WG endpoint. Enter IP manually:"
+            read -r WG_ENDPOINT_IP
         fi
 
         echo "WG endpoint IP: $WG_ENDPOINT_IP"
 
-        # находим WAN gateway
+        # WAN gateway
         WAN_GW=$(ip route | awk '/default/ {print $3}' | head -n1)
 
-        # добавляем маршрут к серверу WG через WAN
+        # маршрут к серверу WG через WAN
         ip route add $WG_ENDPOINT_IP via $WAN_GW dev wan 2>/dev/null || true
 
         # переключаем default route на WG
@@ -49,38 +57,36 @@ route_vpn() {
 
         echo "✅ FULL tunnel enabled"
 
-    fi
-
-    # ---------------- SPLIT TUNNEL ----------------
-    if [ "$MODE" = "split" ]; then
+    elif [ "$MODE" = "split" ]; then
         echo "Configuring SPLIT tunnel via WG..."
 
         # таблица маршрутов
         grep -q '^200 vpn' /etc/iproute2/rt_tables 2>/dev/null || echo "200 vpn" >> /etc/iproute2/rt_tables
 
-        # hotplug
+        # hotplug для wg0
         cat << 'EOF' > /etc/hotplug.d/iface/30-vpnroute
 #!/bin/sh
 [ "$ACTION" = "ifup" ] || exit 0
-
 if [ "$INTERFACE" = "wg0" ]; then
     ip route add table vpn default dev wg0 2>/dev/null || true
 fi
 EOF
-
         chmod +x /etc/hotplug.d/iface/30-vpnroute
 
-        # правило
+        # правило маршрутизации
         ip rule add fwmark 1 table vpn 2>/dev/null || true
 
-        echo "✅ Split-tunnel enabled (нужен ipset + iptables)"
+        echo "✅ Split-tunnel enabled (трафик по доменам через ipset + iptables)"
     fi
 }
 
+# -------------------
+# Настройка WireGuard + DNSCrypt
+# -------------------
 add_wireguard() {
     echo "Configure WireGuard tunnel with optional DNSCrypt-proxy2"
 
-    # Install WireGuard & DNSCrypt
+    # ---------------- Install WireGuard & DNSCrypt ----------------
     if ! apk info wireguard-tools >/dev/null 2>&1; then
         echo "Installing WireGuard..."
         apk add wireguard-tools luci-proto-wireguard
@@ -95,19 +101,17 @@ add_wireguard() {
         echo "DNSCrypt-proxy2 already installed"
     fi
 
-    # Setup DNSCrypt
+    # ---------------- Setup DNSCrypt ----------------
     uci set dhcp.@dnsmasq[0].noresolv="1"
     uci -q delete dhcp.@dnsmasq[0].server
     uci add_list dhcp.@dnsmasq[0].server="127.0.0.53#53"
     uci add_list dhcp.@dnsmasq[0].server='/use-application-dns.net/'
     uci commit dhcp
+
     /etc/init.d/dnsmasq reload
     /etc/init.d/dnscrypt-proxy restart
 
-    # Configure VPN route
-    route_vpn
-
-    # Collect WireGuard info
+    # ---------------- Collect WireGuard info ----------------
     echo -n "Enter your private key: "
     read WG_PRIVATE_KEY
 
@@ -122,29 +126,26 @@ add_wireguard() {
     read WG_PUBLIC_KEY
     echo -n "Enter preshared key (optional, leave blank if none): "
     read WG_PRESHARED_KEY
-    echo -n "Enter endpoint host: "
+    echo -n "Enter endpoint host (domain or IP): "
     read WG_ENDPOINT
     echo -n "Enter endpoint port [51820]: "
     read WG_ENDPOINT_PORT
     WG_ENDPOINT_PORT=${WG_ENDPOINT_PORT:-51820}
 
-    # Configure wg0
+    # ---------------- Configure wg0 ----------------
     uci set network.wg0=interface
     uci set network.wg0.proto='wireguard'
     uci set network.wg0.private_key="$WG_PRIVATE_KEY"
     uci set network.wg0.listen_port='51820'
     uci set network.wg0.addresses="$WG_IP"
 
-    # Configure peer
     if ! uci show network | grep -q wireguard_wg0; then
         uci add network wireguard_wg0
     fi
     uci set network.@wireguard_wg0[0]=wireguard_wg0
     uci set network.@wireguard_wg0[0].name='wg0_client'
     uci set network.@wireguard_wg0[0].public_key="$WG_PUBLIC_KEY"
-    if [ -n "$WG_PRESHARED_KEY" ]; then
-        uci set network.@wireguard_wg0[0].preshared_key="$WG_PRESHARED_KEY"
-    fi
+    [ -n "$WG_PRESHARED_KEY" ] && uci set network.@wireguard_wg0[0].preshared_key="$WG_PRESHARED_KEY"
     uci set network.@wireguard_wg0[0].allowed_ips='0.0.0.0/0'
     uci set network.@wireguard_wg0[0].route_allowed_ips='0'
     uci set network.@wireguard_wg0[0].persistent_keepalive='25'
@@ -152,8 +153,9 @@ add_wireguard() {
     uci set network.@wireguard_wg0[0].endpoint_port="$WG_ENDPOINT_PORT"
     uci commit network
 
+    /etc/init.d/network restart
+
     # ---------------- Firewall ----------------
-    echo "Configuring firewall..."
     uci -q delete firewall.wg
     uci set firewall.wg=zone
     uci set firewall.wg.name='wg'
@@ -171,11 +173,15 @@ add_wireguard() {
     uci commit firewall
     /etc/init.d/firewall restart
 
-    /etc/init.d/network restart
-    echo "WireGuard and DNSCrypt-proxy2 configured successfully!"
+    # ---------------- Route VPN ----------------
+    route_vpn
+
+    echo "✅ WireGuard + DNSCrypt-proxy2 configured successfully!"
 }
 
-# вызов функции
+# -------------------
+# Вызов функции
+# -------------------
 add_wireguard
 
-# пустая строка в конце файла обязательна!
+# пустая строка в конце файла обязательна

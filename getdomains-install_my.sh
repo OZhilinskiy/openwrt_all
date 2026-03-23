@@ -72,4 +72,4 @@ add_wireguard() {
     echo "WireGuard and DNSCrypt-proxy2 configured successfully!"
 }
 
-add_wireguard()
+add_wireguard

@@ -29,7 +29,7 @@ setup_split_vpn_domains() {
     if ! uci show firewall | grep -q "@ipset.*name='vpn_domains'"; then
         uci add firewall ipset
         uci set firewall.@ipset[-1].name='vpn_domains'
-        uci set firewall.@ipset[-1].match='dest_ip'   # корректное значение
+        uci set firewall.@ipset[-1].match='dest_ip'   # корректное значение для nftables
         uci set firewall.@ipset[-1].family='ipv4'
         uci commit firewall
     fi
@@ -52,15 +52,16 @@ setup_split_vpn_domains() {
 
     # ---------------- основной список ----------------
     echo "Downloading domain list..."
-    curl -s "$DOMAINS_URL" | sed 's/\/[^/]*$/\/vpn_domains/' > /tmp/dnsmasq.d/vpn_domains.conf
+    curl -sf "$DOMAINS_URL" | sed 's/\/[^/]*$/\/vpn_domains/' > /tmp/dnsmasq.d/vpn_domains.conf || {
+        echo "❌ Failed to download domain list"
+        return 1
+    }
 
     # ---------------- кастомные домены из /etc/config/dhcp ----------------
-    if uci show dhcp | grep -q "config ipset"; then
-        uci show dhcp | grep "config ipset" | while read -r line; do
-            DOMAIN=$(echo "$line" | sed -n "s/.*list domain '\([^']*\)'.*/\1/p")
-            [ -n "$DOMAIN" ] && echo "ipset=/$DOMAIN/vpn_domains" >> /tmp/dnsmasq.d/vpn_domains.conf
-        done
-    fi
+    uci show dhcp | grep "config ipset" | while read -r line; do
+        DOMAIN=$(echo "$line" | sed -n "s/.*list domain '\([^']*\)'.*/\1/p")
+        [ -n "$DOMAIN" ] && echo "ipset=/$DOMAIN/vpn_domains" >> /tmp/dnsmasq.d/vpn_domains.conf
+    done
 
     # ---------------- restart dnsmasq ----------------
     /etc/init.d/dnsmasq restart
@@ -81,14 +82,15 @@ EOF
 START=99
 start() {
     echo "Updating VPN domain list..."
-    curl -s "$DOMAINS_URL" | sed 's/\/[^/]*$/\/vpn_domains/' > /tmp/dnsmasq.d/vpn_domains.conf
+    curl -sf "$DOMAINS_URL" | sed 's/\/[^/]*$/\/vpn_domains/' > /tmp/dnsmasq.d/vpn_domains.conf || {
+        echo "❌ Failed to download domain list"
+        return 1
+    }
 
-    if uci show dhcp | grep -q "config ipset"; then
-        uci show dhcp | grep "config ipset" | while read -r line; do
-            DOMAIN=\$(echo "\$line" | sed -n "s/.*list domain '\([^']*\)'.*/\1/p")
-            [ -n "\$DOMAIN" ] && echo "ipset=/\$DOMAIN/vpn_domains" >> /tmp/dnsmasq.d/vpn_domains.conf
-        done
-    fi
+    uci show dhcp | grep "config ipset" | while read -r line; do
+        DOMAIN=\$(echo "\$line" | sed -n "s/.*list domain '\([^']*\)'.*/\1/p")
+        [ -n "\$DOMAIN" ] && echo "ipset=/\$DOMAIN/vpn_domains" >> /tmp/dnsmasq.d/vpn_domains.conf
+    done
 
     /etc/init.d/dnsmasq restart
 }

@@ -140,11 +140,13 @@ add_wireguard() {
     WG_ENDPOINT_PORT=${WG_ENDPOINT_PORT:-51820}
 
     # ---------------- Очистка старого интерфейса ----------------
-    uci -q delete network.wg0
-    uci -q delete network.@wireguard_wg0[0]
-    uci commit network
-
+    if uci show network | grep -q '^network.wg0='; then
+        uci -q delete network.wg0
+    fi
+    uci -q delete network.@wireguard_wg0[-1]
+    
     # ---------------- Настройка интерфейса wg0 ----------------
+    uci -q delete network.wg0
     uci set network.wg0=interface
     uci set network.wg0.proto='wireguard'
     uci set network.wg0.private_key="$WG_PRIVATE_KEY"
@@ -153,15 +155,15 @@ add_wireguard() {
 
     # ---------------- Настройка peer ----------------
     uci add network wireguard_wg0
-    uci set network.@wireguard_wg0[0]=wireguard_wg0
-    uci set network.@wireguard_wg0[0].name='wg0_client'
-    uci set network.@wireguard_wg0[0].public_key="$WG_PUBLIC_KEY"
-    [ -n "$WG_PRESHARED_KEY" ] && uci set network.@wireguard_wg0[0].preshared_key="$WG_PRESHARED_KEY"
-    uci set network.@wireguard_wg0[0].allowed_ips='0.0.0.0/0'
-    uci set network.@wireguard_wg0[0].route_allowed_ips='0'
-    uci set network.@wireguard_wg0[0].persistent_keepalive='25'
-    uci set network.@wireguard_wg0[0].endpoint_host="$WG_ENDPOINT"
-    uci set network.@wireguard_wg0[0].endpoint_port="$WG_ENDPOINT_PORT"
+    uci set network.@wireguard_wg0[-1].name='wg0_client'
+    uci set network.@wireguard_wg0[-1].public_key="$WG_PUBLIC_KEY"
+    [ -n "$WG_PRESHARED_KEY" ] && uci set network.@wireguard_wg0[-1].preshared_key="$WG_PRESHARED_KEY"
+    uci set network.@wireguard_wg0[-1].allowed_ips='0.0.0.0/0'
+    uci set network.@wireguard_wg0[-1].route_allowed_ips='0'
+    uci set network.@wireguard_wg0[-1].persistent_keepalive='25'
+    uci set network.@wireguard_wg0[-1].endpoint_host="$WG_ENDPOINT"
+    uci set network.@wireguard_wg0[-1].endpoint_port="$WG_ENDPOINT_PORT"
+
     uci commit network
 
     # ---------------- Настройка firewall ----------------
@@ -171,7 +173,7 @@ add_wireguard() {
     uci set firewall.wg.name='wg'
     uci set firewall.wg.network='wg0'
     uci set firewall.wg.input='REJECT'
-    uci set firewall.wg.forward='ACCEPT'
+    uci set firewall.wg.forward='REJECT'
     uci set firewall.wg.output='ACCEPT'
     uci set firewall.wg.masq='1'
 

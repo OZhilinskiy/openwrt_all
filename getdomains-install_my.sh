@@ -26,33 +26,29 @@ setup_split_vpn_domains() {
     # ---------------- ipset ----------------
     ipset create vpn_domains hash:ip 2>/dev/null || true
 
-    # ---------------- директории ----------------
+    # ---------------- директория ----------------
     mkdir -p /tmp/dnsmasq.d
-    mkdir -p /etc/dnsmasq.d
 
-    # ---------------- основной список (в /tmp) ----------------
-    echo "Downloading domain list..."
-    curl -s "$DOMAINS_URL" | sed 's/\/[^/]*$/\/vpn_domains/' > /tmp/dnsmasq.d/vpn_domains.conf
+    # ---------------- функция обновления ----------------
+    update_dnsmasq_domains() {
+        echo "Updating main domain list..."
+        curl -s "$DOMAINS_URL" | sed 's/\/[^/]*$/\/vpn_domains/' > /tmp/dnsmasq.d/vpn_domains.conf
 
-    # ---------------- custom (в /etc — сохраняется) ----------------
-    if [ ! -f /etc/dnsmasq.d/custom.conf ]; then
-        cat << 'EOF' > /etc/dnsmasq.d/custom.conf
-# Custom domains (persistent)
-# Example:
-# ipset=/example.com/vpn_domains
-EOF
-    fi
+        echo "Adding domains from /etc/config/dhcp..."
+        awk '/^config ipset/ { inblock=($3=="'\''vpn_domains'\''")} 
+             inblock && /^list domain/ { gsub(/'\''/,"",$3); print "ipset="$3"/vpn_domains" }' \
+             /etc/config/dhcp >> /tmp/dnsmasq.d/vpn_domains.conf
 
-    # ---------------- подключаем оба каталога ----------------
-    # dnsmasq может иметь несколько confdir
+        /etc/init.d/dnsmasq restart
+    }
 
+    # ---------------- первый запуск ----------------
+    update_dnsmasq_domains
+
+    # ---------------- confdir для dnsmasq ----------------
     uci -q delete dhcp.@dnsmasq[0].confdir
-
     uci add_list dhcp.@dnsmasq[0].confdir='/tmp/dnsmasq.d'
-    uci add_list dhcp.@dnsmasq[0].confdir='/etc/dnsmasq.d'
-
     uci commit dhcp
-
     /etc/init.d/dnsmasq restart
 
     # ---------------- firewall ----------------
@@ -65,7 +61,6 @@ EOF
     uci set firewall.vpn_mark.ipset='vpn_domains dest'
     uci set firewall.vpn_mark.target='MARK'
     uci set firewall.vpn_mark.set_mark='1'
-
     uci commit firewall
     /etc/init.d/firewall restart
 
@@ -77,7 +72,6 @@ if [ "$INTERFACE" = "wg0" ]; then
     ip route add table vpn default dev wg0 2>/dev/null || true
 fi
 EOF
-
     chmod +x /etc/hotplug.d/iface/30-vpnroute
 
     echo "✅ Split tunnel configured!"
@@ -89,23 +83,22 @@ START=99
 
 start() {
     echo "Updating domain list..."
-    curl -s "$DOMAINS_URL" | sed 's/\/[^/]*$/\/vpn_domains/' > /tmp/dnsmasq.d/vpn_domains.conf
-    /etc/init.d/dnsmasq restart
+    $(declare -f update_dnsmasq_domains)
+    update_dnsmasq_domains
 }
 EOF
-
     chmod +x /etc/init.d/update-vpn-domains
     /etc/init.d/update-vpn-domains enable
 
     (crontab -l 2>/dev/null | grep -v update-vpn-domains; echo "0 */6 * * * /etc/init.d/update-vpn-domains start") | crontab -
-
     /etc/init.d/cron restart
 
     echo "🔄 Auto-update every 6 hours enabled"
-
     echo ""
-    echo "👉 Persistent custom domains:"
-    echo "/etc/dnsmasq.d/custom.conf"
+    echo "👉 Custom domains should be added in /etc/config/dhcp:"
+    echo "config ipset"
+    echo "        list name 'vpn_domains'"
+    echo "        list domain 'example.com'"
 }
 
 # ---------------- ФУНКЦИЯ ROUTE ----------------

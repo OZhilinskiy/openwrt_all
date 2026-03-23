@@ -111,7 +111,7 @@ add_wireguard() {
     uci add_list dhcp.@dnsmasq[0].server='/use-application-dns.net/'
     uci commit dhcp
     /etc/init.d/dnsmasq reload
-    /etc/init.d/dnscrypt-proxy restart
+    /etc/init.d/dnscrypt-proxy2 restart
 
     # ---------------- Сбор данных WireGuard ----------------
     echo -n "Enter your private key: "

@@ -248,7 +248,7 @@ dnsmasqfull() {
 }
 
 dnsmasqconfdir() {
-     printf "\033[32;1dnsmasqconfdir - start \033[0m\n"
+    printf "\033[32;1dnsmasqconfdir - start \033[0m\n"
     # Получаем текущий confdir (без ошибок)
     current_confdir=$(uci -q get dhcp.@dnsmasq[0].confdir)
 

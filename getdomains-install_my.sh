@@ -10,11 +10,8 @@ WG_PRESHARED_KEY=""
 WG_ENDPOINT_IP=""
 
 setup_split_vpn_domains() {
-
     DOMAINS_URL="https://raw.githubusercontent.com/itdoginfo/allow-domains/main/Russia/inside-dnsmasq-nfset.lst"
-
-    echo "Using domain list:"
-    echo "$DOMAINS_URL"
+    echo "Using domain list: $DOMAINS_URL"
 
     # ---------------- пакеты ----------------
     apk add ipset curl dnsmasq-full 2>/dev/null
@@ -23,48 +20,51 @@ setup_split_vpn_domains() {
     grep -q '^200 vpn' /etc/iproute2/rt_tables 2>/dev/null || echo "200 vpn" >> /etc/iproute2/rt_tables
     ip rule add fwmark 1 table vpn 2>/dev/null || true
 
-    # ---------------- ipset ----------------
-    ipset create vpn_domains hash:ip 2>/dev/null || true
-
-    # ---------------- директория ----------------
+    # ---------------- директории ----------------
     mkdir -p /tmp/dnsmasq.d
 
-    # ---------------- функция обновления ----------------
-    update_dnsmasq_domains() {
-        echo "Updating main domain list..."
-        curl -s "$DOMAINS_URL" | sed 's/\/[^/]*$/\/vpn_domains/' > /tmp/dnsmasq.d/vpn_domains.conf
+    # ---------------- ipset ----------------
+    ipset list vpn_domains >/dev/null 2>&1 || ipset create vpn_domains hash:ip
 
-        echo "Adding domains from /etc/config/dhcp..."
-        awk '/^config ipset/ { inblock=($3=="'\''vpn_domains'\''")} 
-             inblock && /^list domain/ { gsub(/'\''/,"",$3); print "ipset="$3"/vpn_domains" }' \
-             /etc/config/dhcp >> /tmp/dnsmasq.d/vpn_domains.conf
+    if ! uci show firewall | grep -q "@ipset.*name='vpn_domains'"; then
+        uci add firewall ipset
+        uci set firewall.@ipset[-1].name='vpn_domains'
+        uci set firewall.@ipset[-1].match='hash:ip'
+        uci set firewall.@ipset[-1].family='ipv4'
+        uci commit firewall
+    fi
 
-        /etc/init.d/dnsmasq restart
-    }
-
-    # ---------------- первый запуск ----------------
-    update_dnsmasq_domains
-
-    # ---------------- confdir для dnsmasq ----------------
-    uci -q delete dhcp.@dnsmasq[0].confdir
-    uci add_list dhcp.@dnsmasq[0].confdir='/tmp/dnsmasq.d'
-    uci commit dhcp
-    /etc/init.d/dnsmasq restart
-
-    # ---------------- firewall ----------------
-    uci -q delete firewall.vpn_mark
-    uci set firewall.vpn_mark=rule
-    uci set firewall.vpn_mark.name='Mark VPN domains'
-    uci set firewall.vpn_mark.src='lan'
-    uci set firewall.vpn_mark.dest='*'
-    uci set firewall.vpn_mark.proto='all'
-    uci set firewall.vpn_mark.ipset='vpn_domains dest'
-    uci set firewall.vpn_mark.target='MARK'
-    uci set firewall.vpn_mark.set_mark='1'
-    uci commit firewall
+    if ! uci show firewall | grep -q "@rule.*name='mark_domains'"; then
+        uci add firewall rule
+        uci set firewall.@rule[-1]=rule
+        uci set firewall.@rule[-1].name='mark_domains'
+        uci set firewall.@rule[-1].src='lan'
+        uci set firewall.@rule[-1].dest='*'
+        uci set firewall.@rule[-1].proto='all'
+        uci set firewall.@rule[-1].ipset='vpn_domains'
+        uci set firewall.@rule[-1].set_mark='0x1'
+        uci set firewall.@rule[-1].target='MARK'
+        uci set firewall.@rule[-1].family='ipv4'
+        uci commit firewall
+    fi
     /etc/init.d/firewall restart
 
-    # ---------------- маршрут wg ----------------
+    # ---------------- основной список ----------------
+    echo "Downloading domain list..."
+    curl -s "$DOMAINS_URL" | sed 's/\/[^/]*$/\/vpn_domains/' > /tmp/dnsmasq.d/vpn_domains.conf
+
+    # ---------------- добавляем кастом из /etc/config/dhcp ----------------
+    if uci show dhcp | grep -q "config ipset"; then
+        uci show dhcp | grep "config ipset" | while read -r line; do
+            DOMAIN=$(echo "$line" | sed -n "s/.*list domain '\([^']*\)'.*/\1/p")
+            [ -n "$DOMAIN" ] && echo "ipset=/$DOMAIN/vpn_domains" >> /tmp/dnsmasq.d/vpn_domains.conf
+        done
+    fi
+
+    # ---------------- restart dnsmasq ----------------
+    /etc/init.d/dnsmasq restart
+
+    # ---------------- hotplug wg ----------------
     cat << 'EOF' > /etc/hotplug.d/iface/30-vpnroute
 #!/bin/sh
 [ "$ACTION" = "ifup" ] || exit 0
@@ -74,31 +74,30 @@ fi
 EOF
     chmod +x /etc/hotplug.d/iface/30-vpnroute
 
-    echo "✅ Split tunnel configured!"
-
     # ---------------- автообновление ----------------
     cat << EOF > /etc/init.d/update-vpn-domains
 #!/bin/sh /etc/rc.common
 START=99
-
 start() {
-    echo "Updating domain list..."
-    $(declare -f update_dnsmasq_domains)
-    update_dnsmasq_domains
+    echo "Updating VPN domain list..."
+    curl -s "$DOMAINS_URL" | sed 's/\/[^/]*$/\/vpn_domains/' > /tmp/dnsmasq.d/vpn_domains.conf
+
+    if uci show dhcp | grep -q "config ipset"; then
+        uci show dhcp | grep "config ipset" | while read -r line; do
+            DOMAIN=\$(echo "\$line" | sed -n "s/.*list domain '\([^']*\)'.*/\1/p")
+            [ -n "\$DOMAIN" ] && echo "ipset=/\$DOMAIN/vpn_domains" >> /tmp/dnsmasq.d/vpn_domains.conf
+        done
+    fi
+
+    /etc/init.d/dnsmasq restart
 }
 EOF
     chmod +x /etc/init.d/update-vpn-domains
     /etc/init.d/update-vpn-domains enable
-
     (crontab -l 2>/dev/null | grep -v update-vpn-domains; echo "0 */6 * * * /etc/init.d/update-vpn-domains start") | crontab -
     /etc/init.d/cron restart
 
-    echo "🔄 Auto-update every 6 hours enabled"
-    echo ""
-    echo "👉 Custom domains should be added in /etc/config/dhcp:"
-    echo "config ipset"
-    echo "        list name 'vpn_domains'"
-    echo "        list domain 'example.com'"
+    echo "✅ Split VPN domains setup complete!"
 }
 
 # ---------------- ФУНКЦИЯ ROUTE ----------------

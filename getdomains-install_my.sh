@@ -22,58 +22,51 @@ setup_split_vpn_domains() {
     grep -q '^200 vpn' /etc/iproute2/rt_tables 2>/dev/null || echo "200 vpn" >> /etc/iproute2/rt_tables
     ip rule add fwmark 1 table vpn 2>/dev/null || true
 
-    # ---------------- firewall ipset (fw4 way) ----------------
-    if ! uci show firewall | grep -q "name='vpn_domains'"; then
-        echo "Creating fw4 nft set..."
-        uci add firewall ipset
-        uci set firewall.@ipset[-1].name='vpn_domains'
-        uci set firewall.@ipset[-1].family='ipv4'
-        uci set firewall.@ipset[-1].match='dest_ip'
-        uci commit firewall
+    # ---------------- nft set ----------------
+    echo "Creating nft set..."
+    nft list table inet fw4 >/dev/null 2>&1 || nft add table inet fw4
+
+    # удалить старый set если есть
+    nft delete set inet fw4 vpn_domains 2>/dev/null || true
+
+    # создать set заново
+    nft add set inet fw4 vpn_domains '{ type ipv4_addr; flags dynamic; }'
+
+    # проверка
+    if ! nft list set inet fw4 vpn_domains >/dev/null 2>&1; then
+        echo "❌ ERROR: nft set vpn_domains not created"
+        exit 1
     fi
+    echo "✅ nft set vpn_domains ready"
 
     # ---------------- правило маркировки ----------------
-    if ! uci show firewall | grep -q "mark_domains"; then
-        echo "Creating fwmark rule..."
-        uci add firewall rule
-        uci set firewall.@rule[-1].name='mark_domains'
-        uci set firewall.@rule[-1].src='lan'
-        uci set firewall.@rule[-1].dest='*'
-        uci set firewall.@rule[-1].proto='all'
-        uci set firewall.@rule[-1].ipset='vpn_domains'
-        uci set firewall.@rule[-1].set_mark='0x1'
-        uci set firewall.@rule[-1].target='MARK'
-        uci set firewall.@rule[-1].family='ipv4'
-        uci commit firewall
-    fi
+    nft list chain inet fw4 mangle_prerouting >/dev/null 2>&1 || \
+        nft add chain inet fw4 mangle_prerouting '{ type filter hook prerouting priority mangle; }'
 
-    /etc/init.d/firewall restart
+    # удалить старую, чтобы не дублировать
+    nft delete rule inet fw4 mangle_prerouting ip daddr @vpn_domains meta mark set 0x1 2>/dev/null || true
+    nft add rule inet fw4 mangle_prerouting ip daddr @vpn_domains meta mark set 0x1
 
     # ---------------- dnsmasq ----------------
     mkdir -p /tmp/dnsmasq.d
 
-    uci set dhcp.@dnsmasq[0].confdir='/tmp/dnsmasq.d'
-    uci commit dhcp
-
     echo "Downloading domain list..."
     curl -s "$DOMAINS_URL" > /tmp/dnsmasq.d/vpn_domains.conf
 
-    # ---------------- кастомные домены ----------------
-    uci show dhcp | grep "list domain" | while read -r line; do
-        DOMAIN=$(echo "$line" | sed -n "s/.*'\([^']*\)'.*/\1/p")
-        [ -n "$DOMAIN" ] && echo "nftset=/$DOMAIN/inet#fw4#vpn_domains" >> /tmp/dnsmasq.d/vpn_domains.conf
-    done
+    # ---------------- кастомные домены из /etc/config/dhcp ----------------
+    if uci show dhcp | grep -q "config ipset"; then
+        uci show dhcp | grep "config ipset" | while read -r line; do
+            DOMAIN=$(echo "$line" | sed -n "s/.*list domain '\([^']*\)'.*/\1/p")
+            [ -n "$DOMAIN" ] && echo "nftset=/$DOMAIN/inet#fw4#vpn_domains" >> /tmp/dnsmasq.d/vpn_domains.conf
+        done
+    fi
 
     /etc/init.d/dnsmasq restart
 
-    # ---------------- убираем full tunnel ----------------
-    echo "Disabling full tunnel..."
-
+    # ---------------- убираем full-tunnel если был ----------------
     ip route del default dev wg0 2>/dev/null || true
-
     uci set network.@wireguard_wg0[0].route_allowed_ips='0'
     uci commit network
-
     /etc/init.d/network restart
 
     # ---------------- маршрут через wg ----------------
@@ -90,6 +83,7 @@ EOF
     chmod +x /etc/hotplug.d/iface/30-vpnroute
 
     echo "✅ NFT split-tunnel configured!"
+    echo "👉 Add your custom domains via /etc/config/dhcp in config ipset section"
 }
 
 # ---------------- ФУНКЦИЯ ROUTE ----------------

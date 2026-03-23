@@ -16,43 +16,65 @@ setup_split_vpn_domains() {
     echo "Using NFT domain list: $DOMAINS_URL"
 
     # ---------------- пакеты ----------------
-    apk add curl dnsmasq-full nftables 2>/dev/null
+    opkg update >/dev/null 2>&1
+    opkg install curl dnsmasq-full >/dev/null 2>&1
 
     # ---------------- таблица маршрутов ----------------
     grep -q '^200 vpn' /etc/iproute2/rt_tables 2>/dev/null || echo "200 vpn" >> /etc/iproute2/rt_tables
     ip rule add fwmark 1 table vpn 2>/dev/null || true
 
-    # ---------------- nft set ----------------
-    echo "Creating nft set..."
-
-    nft list table inet fw4 >/dev/null 2>&1 || nft add table inet fw4
-
-    nft list set inet fw4 vpn_domains >/dev/null 2>&1 || nft add set inet fw4 vpn_domains '{ type ipv4_addr; flags dynamic; }'
-
-    # ---------------- правило маркировки ----------------
-    nft list chain inet fw4 mangle_prerouting >/dev/null 2>&1 || \
-        nft add chain inet fw4 mangle_prerouting '{ type filter hook prerouting priority mangle; }'
-
-    nft add rule inet fw4 mangle_prerouting ip daddr @vpn_domains meta mark set 0x1 2>/dev/null
-
-    # ---------------- dnsmasq ----------------
+    # ---------------- dnsmasq директория ----------------
     mkdir -p /tmp/dnsmasq.d
 
+    # ---------------- включаем confdir ----------------
+    uci -q delete dhcp.@dnsmasq[0].confdir
+    uci add_list dhcp.@dnsmasq[0].confdir='/tmp/dnsmasq.d'
+    uci commit dhcp
+
+    # ---------------- nft set через fw4 ----------------
+    if ! uci show firewall | grep -q "vpn_domains"; then
+        uci add firewall ipset
+        uci set firewall.@ipset[-1].name='vpn_domains'
+        uci set firewall.@ipset[-1].family='ipv4'
+        uci set firewall.@ipset[-1].match='dest_ip'
+        uci commit firewall
+    fi
+
+    # ---------------- правило маркировки ----------------
+    if ! uci show firewall | grep -q "mark_vpn_domains"; then
+        uci add firewall rule
+        uci set firewall.@rule[-1].name='mark_vpn_domains'
+        uci set firewall.@rule[-1].src='lan'
+        uci set firewall.@rule[-1].dest='*'
+        uci set firewall.@rule[-1].proto='all'
+        uci set firewall.@rule[-1].ipset='vpn_domains'
+        uci set firewall.@rule[-1].set_mark='0x1'
+        uci set firewall.@rule[-1].target='MARK'
+        uci set firewall.@rule[-1].family='ipv4'
+        uci commit firewall
+    fi
+
+    /etc/init.d/firewall restart
+
+    # ---------------- основной список ----------------
     echo "Downloading domain list..."
     curl -s "$DOMAINS_URL" > /tmp/dnsmasq.d/vpn_domains.conf
 
     # ---------------- кастомные домены ----------------
-    if uci show dhcp | grep -q "config ipset"; then
-        uci show dhcp | grep "config ipset" | while read -r line; do
-            DOMAIN=$(echo "$line" | sed -n "s/.*list domain '\([^']*\)'.*/\1/p")
-            [ -n "$DOMAIN" ] && echo "nftset=/$DOMAIN/inet#fw4#vpn_domains" >> /tmp/dnsmasq.d/vpn_domains.conf
+    uci show dhcp | grep "=ipset" | while read -r section; do
+        IDX=$(echo "$section" | cut -d'.' -f2)
+        uci get dhcp.$IDX.domain 2>/dev/null | while read DOMAIN; do
+            echo "nftset=/$DOMAIN/inet#fw4#vpn_domains" >> /tmp/dnsmasq.d/vpn_domains.conf
         done
-    fi
+    done
 
     /etc/init.d/dnsmasq restart
 
     # ---------------- убираем full-tunnel ----------------
+    echo "Switching from FULL tunnel to SPLIT..."
+
     ip route del default dev wg0 2>/dev/null || true
+
     uci set network.@wireguard_wg0[0].route_allowed_ips='0'
     uci commit network
     /etc/init.d/network restart
@@ -70,7 +92,7 @@ fi
 EOF
     chmod +x /etc/hotplug.d/iface/30-vpnroute
 
-    echo "✅ NFT split-tunnel configured!"
+    echo "✅ NFT split-tunnel configured (fw4 native)!"
 }
 
 # ---------------- ФУНКЦИЯ ROUTE ----------------

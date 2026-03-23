@@ -1,8 +1,6 @@
 #!/bin/sh
 
-# -------------------
-# Функция маршрутизации
-# -------------------
+# ------------------ VPN Routing ------------------
 route_vpn() {
     echo "Select routing mode:"
     echo "1) Route ALL traffic via WireGuard"
@@ -18,6 +16,7 @@ route_vpn() {
         esac
     done
 
+    # ---------------- FULL TUNNEL ----------------
     if [ "$MODE" = "all" ]; then
         echo "Configuring FULL tunnel via WG..."
 
@@ -26,38 +25,35 @@ route_vpn() {
         uci set network.@wireguard_wg0[0].allowed_ips='0.0.0.0/0'
         uci commit network
 
-        /etc/init.d/network restart
-
         # получаем endpoint
         WG_ENDPOINT=$(uci get network.@wireguard_wg0[0].endpoint_host)
         WG_PORT=$(uci get network.@wireguard_wg0[0].endpoint_port)
 
-        # резолв через локальный DNSCrypt или fallback
-        WG_ENDPOINT_IP=$(nslookup "$WG_ENDPOINT" 127.0.0.1 2>/dev/null | awk '/^Address: / {print $2}' | tail -n1)
-        if [ -z "$WG_ENDPOINT_IP" ]; then
-            echo "Local DNS failed, trying 8.8.8.8..."
-            WG_ENDPOINT_IP=$(nslookup "$WG_ENDPOINT" 8.8.8.8 2>/dev/null | awk '/^Address: / {print $2}' | tail -n1)
-        fi
+        # получаем IP endpoint через публичный DNS
+        WG_ENDPOINT_IP=$(nslookup "$WG_ENDPOINT" 8.8.8.8 2>/dev/null | awk '/^Address: / {print $2}' | tail -n1)
 
         if [ -z "$WG_ENDPOINT_IP" ]; then
-            echo "ERROR: cannot resolve WG endpoint. Enter IP manually:"
-            read -r WG_ENDPOINT_IP
+            echo "ERROR: cannot resolve WG endpoint automatically."
+            echo -n "Enter WG endpoint IP manually: "
+            read WG_ENDPOINT_IP
         fi
 
         echo "WG endpoint IP: $WG_ENDPOINT_IP"
 
-        # WAN gateway
+        # находим WAN gateway
         WAN_GW=$(ip route | awk '/default/ {print $3}' | head -n1)
 
-        # маршрут к серверу WG через WAN
+        # добавляем маршрут к серверу WG через WAN
         ip route add $WG_ENDPOINT_IP via $WAN_GW dev wan 2>/dev/null || true
 
         # переключаем default route на WG
         ip route replace default dev wg0
 
-        echo "✅ FULL tunnel enabled"
+        echo "✅ FULL tunnel enabled via wg0"
+    fi
 
-    elif [ "$MODE" = "split" ]; then
+    # ---------------- SPLIT TUNNEL ----------------
+    if [ "$MODE" = "split" ]; then
         echo "Configuring SPLIT tunnel via WG..."
 
         # таблица маршрутов
@@ -67,26 +63,26 @@ route_vpn() {
         cat << 'EOF' > /etc/hotplug.d/iface/30-vpnroute
 #!/bin/sh
 [ "$ACTION" = "ifup" ] || exit 0
+
 if [ "$INTERFACE" = "wg0" ]; then
     ip route add table vpn default dev wg0 2>/dev/null || true
 fi
 EOF
+
         chmod +x /etc/hotplug.d/iface/30-vpnroute
 
         # правило маршрутизации
         ip rule add fwmark 1 table vpn 2>/dev/null || true
 
-        echo "✅ Split-tunnel enabled (трафик по доменам через ipset + iptables)"
+        echo "✅ Split-tunnel enabled (нужен ipset + iptables для доменов!)"
     fi
 }
 
-# -------------------
-# Настройка WireGuard + DNSCrypt
-# -------------------
+# ------------------ WireGuard + DNSCrypt ------------------
 add_wireguard() {
     echo "Configure WireGuard tunnel with optional DNSCrypt-proxy2"
 
-    # ---------------- Install WireGuard & DNSCrypt ----------------
+    # ---------------- Install packages ----------------
     if ! apk info wireguard-tools >/dev/null 2>&1; then
         echo "Installing WireGuard..."
         apk add wireguard-tools luci-proto-wireguard
@@ -107,7 +103,6 @@ add_wireguard() {
     uci add_list dhcp.@dnsmasq[0].server="127.0.0.53#53"
     uci add_list dhcp.@dnsmasq[0].server='/use-application-dns.net/'
     uci commit dhcp
-
     /etc/init.d/dnsmasq reload
     /etc/init.d/dnscrypt-proxy restart
 
@@ -139,6 +134,7 @@ add_wireguard() {
     uci set network.wg0.listen_port='51820'
     uci set network.wg0.addresses="$WG_IP"
 
+    # Configure peer
     if ! uci show network | grep -q wireguard_wg0; then
         uci add network wireguard_wg0
     fi
@@ -153,14 +149,8 @@ add_wireguard() {
     uci set network.@wireguard_wg0[0].endpoint_port="$WG_ENDPOINT_PORT"
     uci commit network
 
-    /etc/init.d/network restart
-
     # ---------------- Firewall ----------------
-    # Удаляем старую WG-зону, чтобы избежать redefinition
     uci -q delete firewall.wg
-    uci -q delete firewall.lan_wg
-    /etc/init.d/firewall reload
-
     uci set firewall.wg=zone
     uci set firewall.wg.name='wg'
     uci set firewall.wg.network='wg0'
@@ -169,22 +159,20 @@ add_wireguard() {
     uci set firewall.wg.output='ACCEPT'
     uci set firewall.wg.masq='1'
 
+    uci -q delete firewall.lan_wg
     uci set firewall.lan_wg=forwarding
     uci set firewall.lan_wg.src='lan'
     uci set firewall.lan_wg.dest='wg'
 
     uci commit firewall
     /etc/init.d/firewall restart
+    /etc/init.d/network restart
 
-    # ---------------- Route VPN ----------------
+    # ---------------- VPN Routing ----------------
     route_vpn
 
-    echo "✅ WireGuard + DNSCrypt-proxy2 configured successfully!"
+    echo "✅ WireGuard and DNSCrypt-proxy2 configured successfully!"
 }
 
-# -------------------
-# Вызов функции
-# -------------------
+# ------------------ Run ------------------
 add_wireguard
-
-# пустая строка в конце файла обязательна

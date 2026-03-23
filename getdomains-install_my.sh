@@ -16,23 +16,15 @@ setup_split_vpn_domains() {
     echo "Using NFT domain list: $DOMAINS_URL"
 
     # ---------------- пакеты ----------------
-    opkg update >/dev/null 2>&1
-    opkg install curl dnsmasq-full >/dev/null 2>&1
+    apk add curl dnsmasq-full nftables 2>/dev/null
 
     # ---------------- таблица маршрутов ----------------
     grep -q '^200 vpn' /etc/iproute2/rt_tables 2>/dev/null || echo "200 vpn" >> /etc/iproute2/rt_tables
     ip rule add fwmark 1 table vpn 2>/dev/null || true
 
-    # ---------------- dnsmasq директория ----------------
-    mkdir -p /tmp/dnsmasq.d
-
-    # ---------------- включаем confdir ----------------
-    uci -q delete dhcp.@dnsmasq[0].confdir
-    uci add_list dhcp.@dnsmasq[0].confdir='/tmp/dnsmasq.d'
-    uci commit dhcp
-
-    # ---------------- nft set через fw4 ----------------
-    if ! uci show firewall | grep -q "vpn_domains"; then
+    # ---------------- firewall ipset (fw4 way) ----------------
+    if ! uci show firewall | grep -q "name='vpn_domains'"; then
+        echo "Creating fw4 nft set..."
         uci add firewall ipset
         uci set firewall.@ipset[-1].name='vpn_domains'
         uci set firewall.@ipset[-1].family='ipv4'
@@ -41,9 +33,10 @@ setup_split_vpn_domains() {
     fi
 
     # ---------------- правило маркировки ----------------
-    if ! uci show firewall | grep -q "mark_vpn_domains"; then
+    if ! uci show firewall | grep -q "mark_domains"; then
+        echo "Creating fwmark rule..."
         uci add firewall rule
-        uci set firewall.@rule[-1].name='mark_vpn_domains'
+        uci set firewall.@rule[-1].name='mark_domains'
         uci set firewall.@rule[-1].src='lan'
         uci set firewall.@rule[-1].dest='*'
         uci set firewall.@rule[-1].proto='all'
@@ -56,27 +49,31 @@ setup_split_vpn_domains() {
 
     /etc/init.d/firewall restart
 
-    # ---------------- основной список ----------------
+    # ---------------- dnsmasq ----------------
+    mkdir -p /tmp/dnsmasq.d
+
+    uci set dhcp.@dnsmasq[0].confdir='/tmp/dnsmasq.d'
+    uci commit dhcp
+
     echo "Downloading domain list..."
     curl -s "$DOMAINS_URL" > /tmp/dnsmasq.d/vpn_domains.conf
 
     # ---------------- кастомные домены ----------------
-    uci show dhcp | grep "=ipset" | while read -r section; do
-        IDX=$(echo "$section" | cut -d'.' -f2)
-        uci get dhcp.$IDX.domain 2>/dev/null | while read DOMAIN; do
-            echo "nftset=/$DOMAIN/inet#fw4#vpn_domains" >> /tmp/dnsmasq.d/vpn_domains.conf
-        done
+    uci show dhcp | grep "list domain" | while read -r line; do
+        DOMAIN=$(echo "$line" | sed -n "s/.*'\([^']*\)'.*/\1/p")
+        [ -n "$DOMAIN" ] && echo "nftset=/$DOMAIN/inet#fw4#vpn_domains" >> /tmp/dnsmasq.d/vpn_domains.conf
     done
 
     /etc/init.d/dnsmasq restart
 
-    # ---------------- убираем full-tunnel ----------------
-    echo "Switching from FULL tunnel to SPLIT..."
+    # ---------------- убираем full tunnel ----------------
+    echo "Disabling full tunnel..."
 
     ip route del default dev wg0 2>/dev/null || true
 
     uci set network.@wireguard_wg0[0].route_allowed_ips='0'
     uci commit network
+
     /etc/init.d/network restart
 
     # ---------------- маршрут через wg ----------------
@@ -92,7 +89,7 @@ fi
 EOF
     chmod +x /etc/hotplug.d/iface/30-vpnroute
 
-    echo "✅ NFT split-tunnel configured (fw4 native)!"
+    echo "✅ NFT split-tunnel configured!"
 }
 
 # ---------------- ФУНКЦИЯ ROUTE ----------------
@@ -160,6 +157,26 @@ route_vpn() {
 
 # ---------------- ФУНКЦИЯ ADD WIREGUARD ----------------
 add_wireguard() {
+    echo "WireGuard setup:"
+    echo "1) Configure new WireGuard"
+    echo "2) Use existing WireGuard (skip setup)"
+
+    while true; do
+        echo -n "Select: "
+        read WG_MODE
+        case "$WG_MODE" in
+            1) WG_MODE="new"; break ;;
+            2) WG_MODE="skip"; break ;;
+            *) echo "Choose 1 or 2";;
+        esac
+    done
+
+    # ---------------- ПРОПУСК ----------------
+    if [ "$WG_MODE" = "skip" ]; then
+        echo "⏭ Skipping WireGuard setup (using existing wg0)"
+        return
+    fi
+
     echo "Configure WireGuard tunnel with optional DNSCrypt-proxy2"
 
     # ---------------- Установка пакетов ----------------
@@ -186,7 +203,7 @@ add_wireguard() {
     /etc/init.d/dnsmasq reload
     /etc/init.d/dnscrypt-proxy restart
 
-    # ---------------- Сбор данных WireGuard ----------------
+    # ---------------- Сбор данных ----------------
     echo -n "Enter your private key: "
     read WG_PRIVATE_KEY
 
@@ -199,28 +216,28 @@ add_wireguard() {
 
     echo -n "Enter peer public key: "
     read WG_PUBLIC_KEY
-    echo -n "Enter preshared key (optional, leave blank if none): "
+    echo -n "Enter preshared key (optional): "
     read WG_PRESHARED_KEY
-    echo -n "Enter endpoint host (domain or IP): "
+    echo -n "Enter endpoint host: "
     read WG_ENDPOINT
     echo -n "Enter endpoint port [51820]: "
     read WG_ENDPOINT_PORT
     WG_ENDPOINT_PORT=${WG_ENDPOINT_PORT:-51820}
 
-    # ---------------- Очистка старого интерфейса ----------------
+    # ---------------- Очистка ----------------
     if uci show network | grep -q '^network.wg0='; then
         uci -q delete network.wg0
     fi
     uci -q delete network.@wireguard_wg0[-1]
 
-    # ---------------- Настройка интерфейса wg0 ----------------
+    # ---------------- Интерфейс ----------------
     uci set network.wg0=interface
     uci set network.wg0.proto='wireguard'
     uci set network.wg0.private_key="$WG_PRIVATE_KEY"
     uci set network.wg0.listen_port="$WG_ENDPOINT_PORT"
     uci set network.wg0.addresses="$WG_IP"
 
-    # ---------------- Настройка peer ----------------
+    # ---------------- Peer ----------------
     uci add network wireguard_wg0
     uci set network.@wireguard_wg0[-1].name='wg0_client'
     uci set network.@wireguard_wg0[-1].public_key="$WG_PUBLIC_KEY"
@@ -233,9 +250,10 @@ add_wireguard() {
 
     uci commit network
 
-    # ---------------- Настройка firewall ----------------
+    # ---------------- Firewall ----------------
     uci -q delete firewall.wg
     uci -q delete firewall.lan_wg
+
     uci set firewall.wg=zone
     uci set firewall.wg.name='wg'
     uci set firewall.wg.network='wg0'
@@ -249,10 +267,11 @@ add_wireguard() {
     uci set firewall.lan_wg.dest='wg'
 
     uci commit firewall
+
     /etc/init.d/firewall restart
     /etc/init.d/network restart
 
-    echo "WireGuard and DNSCrypt-proxy2 configured successfully!"
+    echo "✅ WireGuard and DNSCrypt-proxy2 configured successfully!"
 }
 
 # ---------------- ВЫЗОВ ФУНКЦИЙ ----------------

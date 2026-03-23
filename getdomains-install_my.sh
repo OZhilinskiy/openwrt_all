@@ -1,6 +1,5 @@
 #!/bin/sh
 
-# ------------------ VPN Routing ------------------
 route_vpn() {
     echo "Select routing mode:"
     echo "1) Route ALL traffic via WireGuard"
@@ -16,20 +15,15 @@ route_vpn() {
         esac
     done
 
-    # ---------------- FULL TUNNEL ----------------
     if [ "$MODE" = "all" ]; then
         echo "Configuring FULL tunnel via WG..."
-
-        # включаем full tunnel в UCI
         uci set network.@wireguard_wg0[0].route_allowed_ips='1'
         uci set network.@wireguard_wg0[0].allowed_ips='0.0.0.0/0'
         uci commit network
 
-        # получаем endpoint
+        # Пробуем получить IP WG endpoint
         WG_ENDPOINT=$(uci get network.@wireguard_wg0[0].endpoint_host)
         WG_PORT=$(uci get network.@wireguard_wg0[0].endpoint_port)
-
-        # получаем IP endpoint через публичный DNS
         WG_ENDPOINT_IP=$(nslookup "$WG_ENDPOINT" 8.8.8.8 2>/dev/null | awk '/^Address: / {print $2}' | tail -n1)
 
         if [ -z "$WG_ENDPOINT_IP" ]; then
@@ -40,49 +34,36 @@ route_vpn() {
 
         echo "WG endpoint IP: $WG_ENDPOINT_IP"
 
-        # находим WAN gateway
         WAN_GW=$(ip route | awk '/default/ {print $3}' | head -n1)
-
-        # добавляем маршрут к серверу WG через WAN
         ip route add $WG_ENDPOINT_IP via $WAN_GW dev wan 2>/dev/null || true
-
-        # переключаем default route на WG
         ip route replace default dev wg0
 
-        echo "✅ FULL tunnel enabled via wg0"
+        echo "✅ FULL tunnel enabled"
     fi
 
-    # ---------------- SPLIT TUNNEL ----------------
     if [ "$MODE" = "split" ]; then
         echo "Configuring SPLIT tunnel via WG..."
-
-        # таблица маршрутов
         grep -q '^200 vpn' /etc/iproute2/rt_tables 2>/dev/null || echo "200 vpn" >> /etc/iproute2/rt_tables
 
-        # hotplug для wg0
         cat << 'EOF' > /etc/hotplug.d/iface/30-vpnroute
 #!/bin/sh
 [ "$ACTION" = "ifup" ] || exit 0
-
 if [ "$INTERFACE" = "wg0" ]; then
     ip route add table vpn default dev wg0 2>/dev/null || true
 fi
 EOF
 
         chmod +x /etc/hotplug.d/iface/30-vpnroute
-
-        # правило маршрутизации
         ip rule add fwmark 1 table vpn 2>/dev/null || true
 
         echo "✅ Split-tunnel enabled (нужен ipset + iptables для доменов!)"
     fi
 }
 
-# ------------------ WireGuard + DNSCrypt ------------------
 add_wireguard() {
     echo "Configure WireGuard tunnel with optional DNSCrypt-proxy2"
 
-    # ---------------- Install packages ----------------
+    # ---------------- Install packages via apk ----------------
     if ! apk info wireguard-tools >/dev/null 2>&1; then
         echo "Installing WireGuard..."
         apk add wireguard-tools luci-proto-wireguard
@@ -121,7 +102,7 @@ add_wireguard() {
     read WG_PUBLIC_KEY
     echo -n "Enter preshared key (optional, leave blank if none): "
     read WG_PRESHARED_KEY
-    echo -n "Enter endpoint host (domain or IP): "
+    echo -n "Enter endpoint host: "
     read WG_ENDPOINT
     echo -n "Enter endpoint port [51820]: "
     read WG_ENDPOINT_PORT
@@ -134,7 +115,7 @@ add_wireguard() {
     uci set network.wg0.listen_port='51820'
     uci set network.wg0.addresses="$WG_IP"
 
-    # Configure peer
+    # ---------------- Configure peer ----------------
     if ! uci show network | grep -q wireguard_wg0; then
         uci add network wireguard_wg0
     fi
@@ -150,29 +131,37 @@ add_wireguard() {
     uci commit network
 
     # ---------------- Firewall ----------------
-    uci -q delete firewall.wg
-    uci set firewall.wg=zone
-    uci set firewall.wg.name='wg'
-    uci set firewall.wg.network='wg0'
-    uci set firewall.wg.input='REJECT'
-    uci set firewall.wg.forward='ACCEPT'
-    uci set firewall.wg.output='ACCEPT'
-    uci set firewall.wg.masq='1'
+    # Проверяем, есть ли зона wg
+    ZONE_IDX=$(uci show firewall | grep -E "@zone.*name='wg'" | awk -F '[][{}]' '{print $2}' | head -n1)
+    if [ -z "$ZONE_IDX" ]; then
+        uci add firewall zone
+        ZONE_IDX=$(uci show firewall | grep -E "@zone.*name='wg'" | awk -F '[][{}]' '{print $2}' | head -n1)
+    fi
 
-    uci -q delete firewall.lan_wg
-    uci set firewall.lan_wg=forwarding
-    uci set firewall.lan_wg.src='lan'
-    uci set firewall.lan_wg.dest='wg'
+    uci set firewall.@zone[$ZONE_IDX].name='wg'
+    uci set firewall.@zone[$ZONE_IDX].network='wg0'
+    uci set firewall.@zone[$ZONE_IDX].input='REJECT'
+    uci set firewall.@zone[$ZONE_IDX].forward='ACCEPT'
+    uci set firewall.@zone[$ZONE_IDX].output='ACCEPT'
+    uci set firewall.@zone[$ZONE_IDX].masq='1'
+
+    # Проверяем forwarding lan->wg
+    FORWARD_IDX=$(uci show firewall | grep -E "@forwarding.*src='lan'.*dest='wg'" | awk -F '[][{}]' '{print $2}' | head -n1)
+    if [ -z "$FORWARD_IDX" ]; then
+        uci add firewall forwarding
+        FORWARD_IDX=$(uci show firewall | grep -E "@forwarding.*src='lan'.*dest='wg'" | awk -F '[][{}]' '{print $2}' | head -n1)
+    fi
+
+    uci set firewall.@forwarding[$FORWARD_IDX].src='lan'
+    uci set firewall.@forwarding[$FORWARD_IDX].dest='wg'
 
     uci commit firewall
     /etc/init.d/firewall restart
     /etc/init.d/network restart
 
-    # ---------------- VPN Routing ----------------
-    route_vpn
-
-    echo "✅ WireGuard and DNSCrypt-proxy2 configured successfully!"
+    echo "WireGuard and DNSCrypt-proxy2 configured successfully!"
 }
 
-# ------------------ Run ------------------
+# ---------------- Run ----------------
 add_wireguard
+route_vpn

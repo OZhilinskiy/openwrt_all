@@ -1,7 +1,9 @@
+#!/bin/sh
+
 add_wireguard() {
     echo "Configure WireGuard tunnel with optional DNSCrypt-proxy2"
 
-    # ---------------- Install packages via apk ----------------
+    # Install WireGuard & DNSCrypt
     if ! apk info wireguard-tools >/dev/null 2>&1; then
         echo "Installing WireGuard..."
         apk add wireguard-tools luci-proto-wireguard
@@ -16,7 +18,7 @@ add_wireguard() {
         echo "DNSCrypt-proxy2 already installed"
     fi
 
-    # ---------------- Setup DNSCrypt ----------------
+    # Setup DNSCrypt
     uci set dhcp.@dnsmasq[0].noresolv="1"
     uci -q delete dhcp.@dnsmasq[0].server
     uci add_list dhcp.@dnsmasq[0].server="127.0.0.53#53"
@@ -25,42 +27,47 @@ add_wireguard() {
     /etc/init.d/dnsmasq reload
     /etc/init.d/dnscrypt-proxy restart
 
-    # ---------------- Configure VPN route ----------------
+    # Configure VPN route
     route_vpn
 
-    # ---------------- Collect WireGuard info ----------------
-    read -r -p "Enter your private key: " WG_PRIVATE_KEY
+    # Collect WireGuard info
+    echo -n "Enter your private key: "
+    read WG_PRIVATE_KEY
 
     while true; do
-        read -r -p "Enter internal IP/subnet (e.g., 192.168.100.5/24): " WG_IP
-        if echo "$WG_IP" | grep -Eq '^([0-9]{1,3}\.){3}[0-9]{1,3}/[0-9]+$'; then
-            break
-        else
-            echo "Invalid IP format. Try again."
-        fi
+        echo -n "Enter internal IP/subnet (e.g., 192.168.100.5/24): "
+        read WG_IP
+        echo "$WG_IP" | grep -Eq '^([0-9]{1,3}\.){3}[0-9]{1,3}/[0-9]+$' && break
+        echo "Invalid IP format. Try again."
     done
 
-    read -r -p "Enter peer public key: " WG_PUBLIC_KEY
-    read -r -p "Enter preshared key (optional, leave blank if none): " WG_PRESHARED_KEY
-    read -r -p "Enter endpoint host (Domain or IP): " WG_ENDPOINT
-    read -r -p "Enter endpoint port [51820]: " WG_ENDPOINT_PORT
+    echo -n "Enter peer public key: "
+    read WG_PUBLIC_KEY
+    echo -n "Enter preshared key (optional, leave blank if none): "
+    read WG_PRESHARED_KEY
+    echo -n "Enter endpoint host: "
+    read WG_ENDPOINT
+    echo -n "Enter endpoint port [51820]: "
+    read WG_ENDPOINT_PORT
     WG_ENDPOINT_PORT=${WG_ENDPOINT_PORT:-51820}
 
-    # ---------------- Configure wg0 ----------------
+    # Configure wg0
     uci set network.wg0=interface
     uci set network.wg0.proto='wireguard'
     uci set network.wg0.private_key="$WG_PRIVATE_KEY"
     uci set network.wg0.listen_port='51820'
     uci set network.wg0.addresses="$WG_IP"
 
-    # ---------------- Configure peer ----------------
+    # Configure peer
     if ! uci show network | grep -q wireguard_wg0; then
         uci add network wireguard_wg0
     fi
     uci set network.@wireguard_wg0[0]=wireguard_wg0
     uci set network.@wireguard_wg0[0].name='wg0_client'
     uci set network.@wireguard_wg0[0].public_key="$WG_PUBLIC_KEY"
-    [ -n "$WG_PRESHARED_KEY" ] && uci set network.@wireguard_wg0[0].preshared_key="$WG_PRESHARED_KEY"
+    if [ -n "$WG_PRESHARED_KEY" ]; then
+        uci set network.@wireguard_wg0[0].preshared_key="$WG_PRESHARED_KEY"
+    fi
     uci set network.@wireguard_wg0[0].allowed_ips='0.0.0.0/0'
     uci set network.@wireguard_wg0[0].route_allowed_ips='0'
     uci set network.@wireguard_wg0[0].persistent_keepalive='25'
@@ -72,4 +79,7 @@ add_wireguard() {
     echo "WireGuard and DNSCrypt-proxy2 configured successfully!"
 }
 
+# вызов функции
 add_wireguard
+
+# пустая строка в конце файла обязательна!

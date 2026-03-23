@@ -25,7 +25,6 @@ route_vpn() {
         esac
     done
 
-    # ---------------- FULL TUNNEL ----------------
     if [ "$MODE" = "all" ]; then
         echo "Configuring FULL tunnel via WG..."
 
@@ -33,22 +32,19 @@ route_vpn() {
         uci set network.@wireguard_wg0[0].allowed_ips='0.0.0.0/0'
         uci commit network
 
-        # если WG_ENDPOINT_IP пустой и WG_ENDPOINT содержит IP, используем его
+        # Получаем IP endpoint
         if [ -z "$WG_ENDPOINT_IP" ] && echo "$WG_ENDPOINT" | grep -Eq '^([0-9]{1,3}\.){3}[0-9]{1,3}$'; then
             WG_ENDPOINT_IP="$WG_ENDPOINT"
         fi
 
-        # резолвим домен
         if [ -z "$WG_ENDPOINT_IP" ]; then
             WG_ENDPOINT_IP=$(nslookup "$WG_ENDPOINT" 2>/dev/null | awk '/^Address: / {print $2}' | tail -n1)
         fi
 
-        # пробуем Google DNS
         if [ -z "$WG_ENDPOINT_IP" ]; then
             WG_ENDPOINT_IP=$(nslookup "$WG_ENDPOINT" 8.8.8.8 2>/dev/null | awk '/^Address: / {print $2}' | tail -n1)
         fi
 
-        # если всё ещё пусто, просим вручную
         if [ -z "$WG_ENDPOINT_IP" ]; then
             echo -n "ERROR: cannot resolve WG endpoint automatically. Enter WG endpoint IP manually: "
             read WG_ENDPOINT_IP
@@ -68,7 +64,6 @@ route_vpn() {
         echo "✅ FULL tunnel enabled"
     fi
 
-    # ---------------- SPLIT TUNNEL ----------------
     if [ "$MODE" = "split" ]; then
         echo "Configuring SPLIT tunnel via WG..."
 
@@ -83,7 +78,6 @@ fi
 EOF
 
         chmod +x /etc/hotplug.d/iface/30-vpnroute
-
         ip rule add fwmark 1 table vpn 2>/dev/null || true
 
         echo "✅ Split-tunnel enabled (нужен ipset + iptables для доменов)"
@@ -144,9 +138,8 @@ add_wireguard() {
         uci -q delete network.wg0
     fi
     uci -q delete network.@wireguard_wg0[-1]
-    
+
     # ---------------- Настройка интерфейса wg0 ----------------
-    uci -q delete network.wg0
     uci set network.wg0=interface
     uci set network.wg0.proto='wireguard'
     uci set network.wg0.private_key="$WG_PRIVATE_KEY"
@@ -192,4 +185,4 @@ add_wireguard() {
 add_wireguard
 route_vpn
 
-# Пустая строка в конце файла обязательна!
+# Пустая строка в конце файла обязательна

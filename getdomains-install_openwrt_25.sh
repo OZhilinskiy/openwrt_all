@@ -79,11 +79,12 @@ add_tunnel() {
     # -------------------------------
     if [ "$TUNNEL" == 'wg' ]; then
         printf "\033[32;1mConfigure WireGuard\033[0m\n"
-        if apk info wireguard-tools >/dev/null 2>&1; then
+        if apk info -e wireguard-tools >/dev/null 2>&1; then
             echo "WireGuard already installed"
         else
             echo "Installing wireguard-tools..."
-            apk add wireguard-tools
+            apk add wireguard-tools 
+            apk add luci-proto-wireguard
         fi
 
         route_vpn

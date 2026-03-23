@@ -1,2 +1,2 @@
 установка wg
-sh <(wget -O - https://raw.githubusercontent.com/OZhilinskiy/openwrt_all/main/wireguard-install.sh)
+bash <(wget -O - https://raw.githubusercontent.com/OZhilinskiy/openwrt_all/main/wireguard-install.sh)

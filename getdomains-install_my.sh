@@ -9,6 +9,105 @@ WG_PUBLIC_KEY=""
 WG_PRESHARED_KEY=""
 WG_ENDPOINT_IP=""
 
+setup_split_vpn_domains() {
+
+    DOMAINS_URL="https://raw.githubusercontent.com/itdoginfo/allow-domains/main/Russia/inside-dnsmasq-nfset.lst"
+
+    echo "Using domain list:"
+    echo "$DOMAINS_URL"
+
+    # ---------------- пакеты ----------------
+    apk add ipset curl dnsmasq-full 2>/dev/null
+
+    # ---------------- таблица маршрутов ----------------
+    grep -q '^200 vpn' /etc/iproute2/rt_tables 2>/dev/null || echo "200 vpn" >> /etc/iproute2/rt_tables
+    ip rule add fwmark 1 table vpn 2>/dev/null || true
+
+    # ---------------- ipset ----------------
+    ipset create vpn_domains hash:ip 2>/dev/null || true
+
+    # ---------------- директории ----------------
+    mkdir -p /tmp/dnsmasq.d
+    mkdir -p /etc/dnsmasq.d
+
+    # ---------------- основной список (в /tmp) ----------------
+    echo "Downloading domain list..."
+    curl -s "$DOMAINS_URL" | sed 's/\/[^/]*$/\/vpn_domains/' > /tmp/dnsmasq.d/vpn_domains.conf
+
+    # ---------------- custom (в /etc — сохраняется) ----------------
+    if [ ! -f /etc/dnsmasq.d/custom.conf ]; then
+        cat << 'EOF' > /etc/dnsmasq.d/custom.conf
+# Custom domains (persistent)
+# Example:
+# ipset=/example.com/vpn_domains
+EOF
+    fi
+
+    # ---------------- подключаем оба каталога ----------------
+    # dnsmasq может иметь несколько confdir
+
+    uci -q delete dhcp.@dnsmasq[0].confdir
+
+    uci add_list dhcp.@dnsmasq[0].confdir='/tmp/dnsmasq.d'
+    uci add_list dhcp.@dnsmasq[0].confdir='/etc/dnsmasq.d'
+
+    uci commit dhcp
+
+    /etc/init.d/dnsmasq restart
+
+    # ---------------- firewall ----------------
+    uci -q delete firewall.vpn_mark
+    uci set firewall.vpn_mark=rule
+    uci set firewall.vpn_mark.name='Mark VPN domains'
+    uci set firewall.vpn_mark.src='lan'
+    uci set firewall.vpn_mark.dest='*'
+    uci set firewall.vpn_mark.proto='all'
+    uci set firewall.vpn_mark.ipset='vpn_domains dest'
+    uci set firewall.vpn_mark.target='MARK'
+    uci set firewall.vpn_mark.set_mark='1'
+
+    uci commit firewall
+    /etc/init.d/firewall restart
+
+    # ---------------- маршрут wg ----------------
+    cat << 'EOF' > /etc/hotplug.d/iface/30-vpnroute
+#!/bin/sh
+[ "$ACTION" = "ifup" ] || exit 0
+if [ "$INTERFACE" = "wg0" ]; then
+    ip route add table vpn default dev wg0 2>/dev/null || true
+fi
+EOF
+
+    chmod +x /etc/hotplug.d/iface/30-vpnroute
+
+    echo "✅ Split tunnel configured!"
+
+    # ---------------- автообновление ----------------
+    cat << EOF > /etc/init.d/update-vpn-domains
+#!/bin/sh /etc/rc.common
+START=99
+
+start() {
+    echo "Updating domain list..."
+    curl -s "$DOMAINS_URL" | sed 's/\/[^/]*$/\/vpn_domains/' > /tmp/dnsmasq.d/vpn_domains.conf
+    /etc/init.d/dnsmasq restart
+}
+EOF
+
+    chmod +x /etc/init.d/update-vpn-domains
+    /etc/init.d/update-vpn-domains enable
+
+    (crontab -l 2>/dev/null | grep -v update-vpn-domains; echo "0 */6 * * * /etc/init.d/update-vpn-domains start") | crontab -
+
+    /etc/init.d/cron restart
+
+    echo "🔄 Auto-update every 6 hours enabled"
+
+    echo ""
+    echo "👉 Persistent custom domains:"
+    echo "/etc/dnsmasq.d/custom.conf"
+}
+
 # ---------------- ФУНКЦИЯ ROUTE ----------------
 route_vpn() {
     echo "Select routing mode:"
@@ -68,20 +167,7 @@ route_vpn() {
     if [ "$MODE" = "split" ]; then
         echo "Configuring SPLIT tunnel via WG..."
 
-        grep -q '^200 vpn' /etc/iproute2/rt_tables 2>/dev/null || echo "200 vpn" >> /etc/iproute2/rt_tables
-
-        cat << 'EOF' > /etc/hotplug.d/iface/30-vpnroute
-#!/bin/sh
-[ "$ACTION" = "ifup" ] || exit 0
-if [ "$INTERFACE" = "wg0" ]; then
-    ip route add table vpn default dev wg0 2>/dev/null || true
-fi
-EOF
-
-        chmod +x /etc/hotplug.d/iface/30-vpnroute
-        ip rule add fwmark 1 table vpn 2>/dev/null || true
-
-        echo "✅ Split-tunnel enabled (нужен ipset + iptables для доменов)"
+        setup_split_vpn_domains
     fi
 }
 
@@ -111,7 +197,7 @@ add_wireguard() {
     uci add_list dhcp.@dnsmasq[0].server='/use-application-dns.net/'
     uci commit dhcp
     /etc/init.d/dnsmasq reload
-    /etc/init.d/dnscrypt-proxy2 restart
+    /etc/init.d/dnscrypt-proxy restart
 
     # ---------------- Сбор данных WireGuard ----------------
     echo -n "Enter your private key: "

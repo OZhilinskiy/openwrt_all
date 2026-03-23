@@ -1,28 +1,55 @@
 #!/bin/sh
 
 route_vpn() {
-    echo "Configuring VPN routing for WireGuard..."
+    echo "Select routing mode:"
+    echo "1) Route ALL traffic via WireGuard"
+    echo "2) Route ONLY selected domains via WireGuard (split-tunnel)"
 
-    # Добавляем таблицу vpn если её нет
-    grep -q '^200 vpn' /etc/iproute2/rt_tables 2>/dev/null || echo "200 vpn" >> /etc/iproute2/rt_tables
+    while true; do
+        echo -n "Select: "
+        read MODE
+        case "$MODE" in
+            1) MODE="all"; break ;;
+            2) MODE="split"; break ;;
+            *) echo "Choose 1 or 2";;
+        esac
+    done
 
-    # Создаём hotplug-скрипт
-    cat << 'EOF' > /etc/hotplug.d/iface/30-vpnroute
+    # ---------------- FULL TUNNEL ----------------
+    if [ "$MODE" = "all" ]; then
+        echo "Configuring FULL tunnel via WG..."
+
+        uci set network.@wireguard_wg0[0].route_allowed_ips='1'
+        uci commit network
+
+        echo "All traffic will go через wg0"
+
+    fi
+
+    # ---------------- SPLIT TUNNEL ----------------
+    if [ "$MODE" = "split" ]; then
+        echo "Configuring SPLIT tunnel via WG..."
+
+        # таблица маршрутов
+        grep -q '^200 vpn' /etc/iproute2/rt_tables 2>/dev/null || echo "200 vpn" >> /etc/iproute2/rt_tables
+
+        # hotplug для wg0
+        cat << 'EOF' > /etc/hotplug.d/iface/30-vpnroute
 #!/bin/sh
-
-# выполняем только при поднятии интерфейса
 [ "$ACTION" = "ifup" ] || exit 0
 
-# только для wg0
 if [ "$INTERFACE" = "wg0" ]; then
-    echo "Adding default route to table vpn via wg0"
     ip route add table vpn default dev wg0 2>/dev/null || true
 fi
 EOF
 
-    chmod +x /etc/hotplug.d/iface/30-vpnroute
+        chmod +x /etc/hotplug.d/iface/30-vpnroute
 
-    echo "Done: wg0 will use routing table vpn"
+        # правило маршрутизации
+        ip rule add fwmark 1 table vpn 2>/dev/null || true
+
+        echo "Split-tunnel enabled (нужен ipset + iptables для доменов!)"
+    fi
 }
 
 add_wireguard() {

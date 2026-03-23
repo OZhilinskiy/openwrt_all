@@ -156,7 +156,11 @@ add_wireguard() {
     /etc/init.d/network restart
 
     # ---------------- Firewall ----------------
+    # Удаляем старую WG-зону, чтобы избежать redefinition
     uci -q delete firewall.wg
+    uci -q delete firewall.lan_wg
+    /etc/init.d/firewall reload
+
     uci set firewall.wg=zone
     uci set firewall.wg.name='wg'
     uci set firewall.wg.network='wg0'
@@ -165,7 +169,6 @@ add_wireguard() {
     uci set firewall.wg.output='ACCEPT'
     uci set firewall.wg.masq='1'
 
-    uci -q delete firewall.lan_wg
     uci set firewall.lan_wg=forwarding
     uci set firewall.lan_wg.src='lan'
     uci set firewall.lan_wg.dest='wg'

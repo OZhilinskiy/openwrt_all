@@ -17,7 +17,7 @@ setup_split_vpn_domains() {
     apk add ipset curl dnsmasq-full 2>/dev/null
 
     # ---------------- таблица маршрутов ----------------
-    grep -q '^200 vpn' /etc/iproute2/rt_tables 2>/dev/null || echo "200 vpn" >> /etc/iproute2/rt_tables
+    grep -q '^200 vpn' /etc/iproute2/rt_tables 2>/dev/null || echo "200 vpn vpn" >> /etc/iproute2/rt_tables
     ip rule add fwmark 1 table vpn 2>/dev/null || true
 
     # ---------------- директории ----------------
@@ -69,6 +69,7 @@ setup_split_vpn_domains() {
 #!/bin/sh
 [ "$ACTION" = "ifup" ] || exit 0
 if [ "$INTERFACE" = "wg0" ]; then
+    # default route only in vpn table
     ip route add table vpn default dev wg0 2>/dev/null || true
 fi
 EOF
@@ -98,6 +99,7 @@ EOF
     /etc/init.d/cron restart
 
     echo "✅ Split VPN domains setup complete!"
+    echo "👉 Add your custom domains via /etc/config/dhcp in config ipset section"
 }
 
 # ---------------- ФУНКЦИЯ ROUTE ----------------

@@ -19,10 +19,35 @@ route_vpn() {
     if [ "$MODE" = "all" ]; then
         echo "Configuring FULL tunnel via WG..."
 
+        # включаем full tunnel в UCI
         uci set network.@wireguard_wg0[0].route_allowed_ips='1'
+        uci set network.@wireguard_wg0[0].allowed_ips='0.0.0.0/0'
         uci commit network
 
-        echo "All traffic will go через wg0"
+        # получаем endpoint
+        WG_ENDPOINT=$(uci get network.@wireguard_wg0[0].endpoint_host)
+        WG_PORT=$(uci get network.@wireguard_wg0[0].endpoint_port)
+
+        # получаем IP endpoint
+        WG_ENDPOINT_IP=$(nslookup "$WG_ENDPOINT" 2>/dev/null | awk '/^Address: / {print $2}' | tail -n1)
+
+        if [ -z "$WG_ENDPOINT_IP" ]; then
+            echo "ERROR: cannot resolve WG endpoint"
+            return 1
+        fi
+
+        echo "WG endpoint IP: $WG_ENDPOINT_IP"
+
+        # находим WAN gateway
+        WAN_GW=$(ip route | awk '/default/ {print $3}' | head -n1)
+
+        # добавляем маршрут к серверу WG через WAN
+        ip route add $WG_ENDPOINT_IP via $WAN_GW dev wan 2>/dev/null || true
+
+        # переключаем default route на WG
+        ip route replace default dev wg0
+
+        echo "✅ FULL tunnel enabled"
 
     fi
 
@@ -33,7 +58,7 @@ route_vpn() {
         # таблица маршрутов
         grep -q '^200 vpn' /etc/iproute2/rt_tables 2>/dev/null || echo "200 vpn" >> /etc/iproute2/rt_tables
 
-        # hotplug для wg0
+        # hotplug
         cat << 'EOF' > /etc/hotplug.d/iface/30-vpnroute
 #!/bin/sh
 [ "$ACTION" = "ifup" ] || exit 0
@@ -45,10 +70,10 @@ EOF
 
         chmod +x /etc/hotplug.d/iface/30-vpnroute
 
-        # правило маршрутизации
+        # правило
         ip rule add fwmark 1 table vpn 2>/dev/null || true
 
-        echo "Split-tunnel enabled (нужен ipset + iptables для доменов!)"
+        echo "✅ Split-tunnel enabled (нужен ipset + iptables)"
     fi
 }
 

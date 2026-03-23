@@ -7,29 +7,37 @@ check_repo() {
     apk update | grep -q "Failed to download" && printf "\033[32;1mapk failed. Check internet or date. Command for force ntp sync: ntpd -p ptbtime1.ptb.de\033[0m\n" && exit 1
 }
 
-route_vpn () {
-    if [ "$TUNNEL" == wg ]; then
-cat << EOF > /etc/hotplug.d/iface/30-vpnroute
+route_vpn() {
+    # создаём таблицу vpn если ещё нет
+    grep -q '^200 vpn' /etc/iproute2/rt_tables || echo "200 vpn" >> /etc/iproute2/rt_tables
+
+    cat << 'EOF' > /etc/hotplug.d/iface/30-vpnroute
 #!/bin/sh
 
-ip route add table vpn default dev wg0
-EOF
-    elif [ "$TUNNEL" == awg ]; then
-cat << EOF > /etc/hotplug.d/iface/30-vpnroute
-#!/bin/sh
+# Определяем интерфейс для маршрута
+TUN_IFACE=""
+if [ "$INTERFACE" = "wg0" ]; then
+    TUN_IFACE="wg0"
+elif [ "$INTERFACE" = "awg0" ]; then
+    TUN_IFACE="awg0"
+elif [ "$INTERFACE" = "tun0" ]; then
+    # Ждём появления интерфейса tun0
+    count=0
+    while [ $count -lt 10 ]; do
+        ip link show tun0 >/dev/null 2>&1 && break
+        sleep 1
+        count=$((count+1))
+    done
+    TUN_IFACE="tun0"
+fi
 
-ip route add table vpn default dev awg0
+# Добавляем маршрут в таблицу vpn, если интерфейс найден
+if [ -n "$TUN_IFACE" ]; then
+    ip route add table vpn default dev $TUN_IFACE 2>/dev/null || true
+fi
 EOF
-    elif [ "$TUNNEL" == singbox ] || [ "$TUNNEL" == ovpn ] || [ "$TUNNEL" == tun2socks ]; then
-cat << EOF > /etc/hotplug.d/iface/30-vpnroute
-#!/bin/sh
 
-sleep 10
-ip route add table vpn default dev tun0
-EOF
-    fi
-
-    cp /etc/hotplug.d/iface/30-vpnroute /etc/hotplug.d/net/30-vpnroute
+    chmod +x /etc/hotplug.d/iface/30-vpnroute
 }
 
 add_mark() {

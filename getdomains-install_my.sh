@@ -2,11 +2,12 @@
 
 # ---------------- ГЛОБАЛЬНЫЕ ПЕРЕМЕННЫЕ ----------------
 WG_ENDPOINT=""
-WG_ENDPOINT_PORT=""
+WG_ENDPOINT_PORT="51820"
 WG_PRIVATE_KEY=""
 WG_IP=""
 WG_PUBLIC_KEY=""
 WG_PRESHARED_KEY=""
+WG_ENDPOINT_IP=""
 
 # ---------------- ФУНКЦИЯ ROUTE ----------------
 route_vpn() {
@@ -32,19 +33,22 @@ route_vpn() {
         uci set network.@wireguard_wg0[0].allowed_ips='0.0.0.0/0'
         uci commit network
 
-        # если WG_ENDPOINT пустой — берём из UCI
-        [ -z "$WG_ENDPOINT" ] && WG_ENDPOINT=$(uci get network.@wireguard_wg0[0].endpoint_host)
-        [ -z "$WG_ENDPOINT_PORT" ] && WG_ENDPOINT_PORT=$(uci get network.@wireguard_wg0[0].endpoint_port)
+        # если WG_ENDPOINT_IP пустой и WG_ENDPOINT содержит IP, используем его
+        if [ -z "$WG_ENDPOINT_IP" ] && echo "$WG_ENDPOINT" | grep -Eq '^([0-9]{1,3}\.){3}[0-9]{1,3}$'; then
+            WG_ENDPOINT_IP="$WG_ENDPOINT"
+        fi
 
-        # пробуем резолвить через локальный DNS
-        WG_ENDPOINT_IP=$(nslookup "$WG_ENDPOINT" 2>/dev/null | awk '/^Address: / {print $2}' | tail -n1)
-
+        # резолвим домен
         if [ -z "$WG_ENDPOINT_IP" ]; then
-            echo "Local DNS failed, trying 8.8.8.8..."
+            WG_ENDPOINT_IP=$(nslookup "$WG_ENDPOINT" 2>/dev/null | awk '/^Address: / {print $2}' | tail -n1)
+        fi
+
+        # пробуем Google DNS
+        if [ -z "$WG_ENDPOINT_IP" ]; then
             WG_ENDPOINT_IP=$(nslookup "$WG_ENDPOINT" 8.8.8.8 2>/dev/null | awk '/^Address: / {print $2}' | tail -n1)
         fi
 
-        # если не смогли резолвить — запрашиваем вручную
+        # если всё ещё пусто, просим вручную
         if [ -z "$WG_ENDPOINT_IP" ]; then
             echo -n "ERROR: cannot resolve WG endpoint automatically. Enter WG endpoint IP manually: "
             read WG_ENDPOINT_IP
@@ -135,17 +139,20 @@ add_wireguard() {
     read WG_ENDPOINT_PORT
     WG_ENDPOINT_PORT=${WG_ENDPOINT_PORT:-51820}
 
+    # ---------------- Очистка старого интерфейса ----------------
+    uci -q delete network.wg0
+    uci -q delete network.@wireguard_wg0[0]
+    uci commit network
+
     # ---------------- Настройка интерфейса wg0 ----------------
     uci set network.wg0=interface
     uci set network.wg0.proto='wireguard'
     uci set network.wg0.private_key="$WG_PRIVATE_KEY"
-    uci set network.wg0.listen_port='51820'
+    uci set network.wg0.listen_port="$WG_ENDPOINT_PORT"
     uci set network.wg0.addresses="$WG_IP"
 
     # ---------------- Настройка peer ----------------
-    if ! uci show network | grep -q wireguard_wg0; then
-        uci add network wireguard_wg0
-    fi
+    uci add network wireguard_wg0
     uci set network.@wireguard_wg0[0]=wireguard_wg0
     uci set network.@wireguard_wg0[0].name='wg0_client'
     uci set network.@wireguard_wg0[0].public_key="$WG_PUBLIC_KEY"
@@ -159,6 +166,7 @@ add_wireguard() {
 
     # ---------------- Настройка firewall ----------------
     uci -q delete firewall.wg
+    uci -q delete firewall.lan_wg
     uci set firewall.wg=zone
     uci set firewall.wg.name='wg'
     uci set firewall.wg.network='wg0'
@@ -167,7 +175,6 @@ add_wireguard() {
     uci set firewall.wg.output='ACCEPT'
     uci set firewall.wg.masq='1'
 
-    uci -q delete firewall.lan_wg
     uci set firewall.lan_wg=forwarding
     uci set firewall.lan_wg.src='lan'
     uci set firewall.lan_wg.dest='wg'

@@ -613,9 +613,9 @@ add_packages() {
 
 add_getdomains() {
     echo "Choose your country:"
-    echo "1) Russia inside. You are inside Russia"
-    echo "2) Russia outside. You are outside of Russia, but need access to Russian resources"
-    echo "3) Ukraine. uablacklist.net list"
+    echo "1) Russia inside"
+    echo "2) Russia outside"
+    echo "3) Ukraine"
     echo "4) Skip script creation"
 
     while true; do
@@ -629,7 +629,6 @@ add_getdomains() {
         esac
     done
 
-    # Устанавливаем URL для выбранной страны
     if [ "$COUNTRY" = 'russia_inside' ]; then
         DOMAINS_URL="https://raw.githubusercontent.com/itdoginfo/allow-domains/main/Russia/inside-dnsmasq-nfset.lst"
     elif [ "$COUNTRY" = 'russia_outside' ]; then
@@ -640,18 +639,21 @@ add_getdomains() {
 
     if [ "$COUNTRY" != '0' ]; then
         printf "\033[32;1mCreating script /etc/init.d/getdomains\033[0m\n"
-
         mkdir -p /tmp/dnsmasq.d
 
         cat << EOF > /etc/init.d/getdomains
 #!/bin/sh /etc/rc.common
 START=99
+MAX_RETRIES=10
+DOMAINS_URL="$DOMAINS_URL"
 
 start() {
     count=0
-    while true; do
+    mkdir -p /tmp/dnsmasq.d
+
+    while [ \$count -lt \$MAX_RETRIES ]; do
         if wget --timeout=5 -q --spider https://github.com; then
-            wget -q -O /tmp/dnsmasq.d/domains.lst $DOMAINS_URL
+            wget -q -O /tmp/dnsmasq.d/domains.lst "\$DOMAINS_URL"
             break
         else
             echo "Cannot reach GitHub. Retrying... [\$count]"
@@ -660,10 +662,16 @@ start() {
         fi
     done
 
-    if dnsmasq --conf-file=/tmp/dnsmasq.d/domains.lst --test 2>&1 | grep -q "syntax check OK"; then
-        /etc/init.d/dnsmasq restart
+    if [ ! -f /tmp/dnsmasq.d/domains.lst ]; then
+        echo "Failed to download domains list"
+        return 1
+    fi
+
+    dnsmasq --test 2>/dev/null
+    if [ \$? -eq 0 ]; then
+        /etc/init.d/dnsmasq reload
     else
-        echo "Error: syntax check failed for /tmp/dnsmasq.d/domains.lst"
+        echo "Error: dnsmasq syntax check failed"
     fi
 }
 EOF
@@ -671,8 +679,9 @@ EOF
         chmod +x /etc/init.d/getdomains
         /etc/init.d/getdomains enable
 
-        # Настроим cron, если еще не добавлен
-        (crontab -l 2>/dev/null | grep -v '/etc/init.d/getdomains'; echo "0 */8 * * * /etc/init.d/getdomains start") | crontab -
+        # Настройка cron для OpenWrt
+        CRON_LINE="0 */8 * * * /etc/init.d/getdomains start"
+        grep -qF "$CRON_LINE" /etc/crontabs/root || echo "$CRON_LINE" >> /etc/crontabs/root
         /etc/init.d/cron restart
 
         printf "\033[32;1mStarting getdomains script now\033[0m\n"

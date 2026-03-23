@@ -11,17 +11,14 @@ WG_ENDPOINT_IP=""
 
 #!/bin/sh
 
+#!/bin/sh
+
 setup_split_vpn_domains() {
     DOMAINS_URL="https://raw.githubusercontent.com/itdoginfo/allow-domains/main/Russia/inside-dnsmasq-nfset.lst"
     echo "Using NFT domain list: $DOMAINS_URL"
 
     # ---------------- пакеты ----------------
     apk add curl dnsmasq-full nftables 2>/dev/null
-
-    # ---------------- таблица маршрутов ----------------
-    grep -q '^200 vpn' /etc/iproute2/rt_tables 2>/dev/null || echo "200 vpn" >> /etc/iproute2/rt_tables
-    ip rule add fwmark 1 table vpn 2>/dev/null || true
-    ip route add table vpn default dev wg0 2>/dev/null || true
 
     # ---------------- nftables ----------------
     nft list table inet fw4 >/dev/null 2>&1 || nft add table inet fw4
@@ -33,12 +30,19 @@ setup_split_vpn_domains() {
 
     # Удаляем старую правило, чтобы не дублировалось
     nft delete rule inet fw4 mangle_prerouting handle 0 2>/dev/null || true
+
+    # ---------------- NFT rule – помечаем пакеты ----------------
     nft add rule inet fw4 mangle_prerouting ip daddr @vpn_domains meta mark set 0x1
+
+    # ---------------- Таблица маршрутов ----------------
+    grep -q '^200 vpn' /etc/iproute2/rt_tables 2>/dev/null || echo "200 vpn" >> /etc/iproute2/rt_tables
+    ip rule add fwmark 1 table vpn 2>/dev/null || true
+
+    # ---------------- Маршрут через WG ----------------
+    ip route add table vpn default dev wg0 2>/dev/null || true
 
     # ---------------- dnsmasq ----------------
     mkdir -p /tmp/dnsmasq.d
-
-    echo "Downloading domain list..."
     curl -s "$DOMAINS_URL" > /tmp/dnsmasq.d/vpn_domains.conf
 
     # ---------------- кастомные домены ----------------
@@ -51,12 +55,6 @@ setup_split_vpn_domains() {
 
     /etc/init.d/dnsmasq restart
 
-    # ---------------- убираем full-tunnel ----------------
-    ip route del default dev wg0 2>/dev/null || true
-    uci set network.@wireguard_wg0[0].route_allowed_ips='0'
-    uci commit network
-    /etc/init.d/network restart
-
     # ---------------- hotplug ----------------
     cat << 'EOF' > /etc/hotplug.d/iface/30-vpnroute
 #!/bin/sh
@@ -67,8 +65,39 @@ fi
 EOF
     chmod +x /etc/hotplug.d/iface/30-vpnroute
 
-    echo "✅ NFT split-tunnel configured!"
-    echo "👉 Add your custom domains via /etc/config/dhcp in config ipset section"
+    # ---------------- автообновление ----------------
+    cat << EOF > /etc/init.d/update-vpn-domains
+#!/bin/sh /etc/rc.common
+START=99
+start() {
+    echo "Updating VPN domain list..."
+    DOMAINS_URL="$DOMAINS_URL"
+    # Обновляем /tmp/dnsmasq.d/vpn_domains.conf
+    curl -s "\$DOMAINS_URL" > /tmp/dnsmasq.d/vpn_domains.conf
+
+    # Кастомные домены
+    if uci show dhcp | grep -q "config ipset"; then
+        uci show dhcp | grep "config ipset" | while read -r line; do
+            DOMAIN=\$(echo "\$line" | sed -n "s/.*list domain '\([^']*\)'.*/\1/p")
+            [ -n "\$DOMAIN" ] && echo "nftset=/\$DOMAIN/inet#fw4#vpn_domains" >> /tmp/dnsmasq.d/vpn_domains.conf
+        done
+    fi
+
+    # Применяем в NFT set
+    nft flush set inet fw4 vpn_domains
+    grep -oP '(?<=^)[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+' /tmp/dnsmasq.d/vpn_domains.conf | \
+        while read IP; do nft add element inet fw4 vpn_domains { \$IP }; done
+
+    /etc/init.d/dnsmasq restart
+}
+EOF
+
+    chmod +x /etc/init.d/update-vpn-domains
+    /etc/init.d/update-vpn-domains enable
+    (crontab -l 2>/dev/null | grep -v update-vpn-domains; echo "0 */6 * * * /etc/init.d/update-vpn-domains start") | crontab -
+    /etc/init.d/cron restart
+
+    echo "✅ Split-tunnel configured and auto-update enabled!"
 }
 
 # ---------------- ФУНКЦИЯ ROUTE ----------------

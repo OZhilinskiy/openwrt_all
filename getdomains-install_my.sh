@@ -21,30 +21,18 @@ setup_split_vpn_domains() {
     # ---------------- таблица маршрутов ----------------
     grep -q '^200 vpn' /etc/iproute2/rt_tables 2>/dev/null || echo "200 vpn" >> /etc/iproute2/rt_tables
     ip rule add fwmark 1 table vpn 2>/dev/null || true
+    ip route add table vpn default dev wg0 2>/dev/null || true
 
-    # ---------------- nft set ----------------
-    echo "Creating nft set..."
+    # ---------------- nftables ----------------
     nft list table inet fw4 >/dev/null 2>&1 || nft add table inet fw4
+    nft list set inet fw4 vpn_domains >/dev/null 2>&1 || \
+        nft add set inet fw4 vpn_domains '{ type ipv4_addr; flags dynamic; }'
 
-    # удалить старый set если есть
-    nft delete set inet fw4 vpn_domains 2>/dev/null || true
-
-    # создать set заново
-    nft add set inet fw4 vpn_domains '{ type ipv4_addr; flags dynamic; }'
-
-    # проверка
-    if ! nft list set inet fw4 vpn_domains >/dev/null 2>&1; then
-        echo "❌ ERROR: nft set vpn_domains not created"
-        exit 1
-    fi
-    echo "✅ nft set vpn_domains ready"
-
-    # ---------------- правило маркировки ----------------
     nft list chain inet fw4 mangle_prerouting >/dev/null 2>&1 || \
         nft add chain inet fw4 mangle_prerouting '{ type filter hook prerouting priority mangle; }'
 
-    # удалить старую, чтобы не дублировать
-    nft delete rule inet fw4 mangle_prerouting ip daddr @vpn_domains meta mark set 0x1 2>/dev/null || true
+    # Удаляем старую правило, чтобы не дублировалось
+    nft delete rule inet fw4 mangle_prerouting handle 0 2>/dev/null || true
     nft add rule inet fw4 mangle_prerouting ip daddr @vpn_domains meta mark set 0x1
 
     # ---------------- dnsmasq ----------------
@@ -53,7 +41,7 @@ setup_split_vpn_domains() {
     echo "Downloading domain list..."
     curl -s "$DOMAINS_URL" > /tmp/dnsmasq.d/vpn_domains.conf
 
-    # ---------------- кастомные домены из /etc/config/dhcp ----------------
+    # ---------------- кастомные домены ----------------
     if uci show dhcp | grep -q "config ipset"; then
         uci show dhcp | grep "config ipset" | while read -r line; do
             DOMAIN=$(echo "$line" | sed -n "s/.*list domain '\([^']*\)'.*/\1/p")
@@ -63,14 +51,11 @@ setup_split_vpn_domains() {
 
     /etc/init.d/dnsmasq restart
 
-    # ---------------- убираем full-tunnel если был ----------------
+    # ---------------- убираем full-tunnel ----------------
     ip route del default dev wg0 2>/dev/null || true
     uci set network.@wireguard_wg0[0].route_allowed_ips='0'
     uci commit network
     /etc/init.d/network restart
-
-    # ---------------- маршрут через wg ----------------
-    ip route add table vpn default dev wg0 2>/dev/null || true
 
     # ---------------- hotplug ----------------
     cat << 'EOF' > /etc/hotplug.d/iface/30-vpnroute

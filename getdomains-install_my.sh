@@ -17,10 +17,10 @@ setup_split_vpn_domains() {
     apk add ipset curl dnsmasq-full 2>/dev/null
 
     # ---------------- таблица маршрутов ----------------
-    grep -q '^200 vpn' /etc/iproute2/rt_tables 2>/dev/null || echo "200 vpn vpn" >> /etc/iproute2/rt_tables
+    grep -q '^200 vpn' /etc/iproute2/rt_tables 2>/dev/null || echo "200 vpn" >> /etc/iproute2/rt_tables
     ip rule add fwmark 1 table vpn 2>/dev/null || true
 
-    # ---------------- директории ----------------
+    # ---------------- директория dnsmasq ----------------
     mkdir -p /tmp/dnsmasq.d
 
     # ---------------- ipset ----------------
@@ -29,11 +29,12 @@ setup_split_vpn_domains() {
     if ! uci show firewall | grep -q "@ipset.*name='vpn_domains'"; then
         uci add firewall ipset
         uci set firewall.@ipset[-1].name='vpn_domains'
-        uci set firewall.@ipset[-1].match='hash:ip'
+        uci set firewall.@ipset[-1].match='dest_ip'   # корректное значение
         uci set firewall.@ipset[-1].family='ipv4'
         uci commit firewall
     fi
 
+    # ---------------- правило fwmark ----------------
     if ! uci show firewall | grep -q "@rule.*name='mark_domains'"; then
         uci add firewall rule
         uci set firewall.@rule[-1]=rule
@@ -53,7 +54,7 @@ setup_split_vpn_domains() {
     echo "Downloading domain list..."
     curl -s "$DOMAINS_URL" | sed 's/\/[^/]*$/\/vpn_domains/' > /tmp/dnsmasq.d/vpn_domains.conf
 
-    # ---------------- добавляем кастом из /etc/config/dhcp ----------------
+    # ---------------- кастомные домены из /etc/config/dhcp ----------------
     if uci show dhcp | grep -q "config ipset"; then
         uci show dhcp | grep "config ipset" | while read -r line; do
             DOMAIN=$(echo "$line" | sed -n "s/.*list domain '\([^']*\)'.*/\1/p")
@@ -69,7 +70,6 @@ setup_split_vpn_domains() {
 #!/bin/sh
 [ "$ACTION" = "ifup" ] || exit 0
 if [ "$INTERFACE" = "wg0" ]; then
-    # default route only in vpn table
     ip route add table vpn default dev wg0 2>/dev/null || true
 fi
 EOF

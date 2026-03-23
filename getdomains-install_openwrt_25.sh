@@ -266,8 +266,20 @@ dnsmasqconfdir() {
 }
 
 remove_forwarding() {
-    if [ ! -z "$forward_id" ]; then
-        while uci -q delete firewall.@forwarding[$forward_id]; do :; done
+    local forward_id="$1"
+
+    if [ -n "$forward_id" ]; then
+        # Проверяем, существует ли forwarding
+        while uci -q get firewall.@forwarding[$forward_id] >/dev/null 2>&1; do
+            printf "\033[33;1mDeleting forwarding id=%s\033[0m\n" "$forward_id"
+            uci delete firewall.@forwarding[$forward_id]
+        done
+
+        # Сохраняем изменения и применяем
+        uci commit firewall
+        /etc/init.d/firewall reload
+    else
+        echo "forward_id is empty, skipping"
     fi
 }
 
@@ -277,11 +289,20 @@ remove_forwarding() {
 remove_zone() {
     local name="$1"
     local idx
+
+    # Ищем индекс зоны по имени
     idx=$(uci show firewall | grep -E "@zone.*name='$name'" | awk -F '[][{}]' '{print $2}' | head -n1)
-    if [ ! -z "$idx" ]; then
-        printf "\033[33;1mDeleting old zone: $name (id=$idx)\033[0m\n"
+
+    if [ -n "$idx" ]; then
+        printf "\033[33;1mDeleting old zone: %s (id=%s)\033[0m\n" "$name" "$idx"
+
         uci delete firewall.@zone[$idx]
         uci commit firewall
+
+        # Применяем изменения
+        /etc/init.d/firewall reload
+    else
+        printf "\033[31;1mZone '%s' not found, skipping\033[0m\n" "$name"
     fi
 }
 
@@ -289,10 +310,20 @@ remove_zone() {
 # Удаление старого forwarding
 # -------------------------------
 remove_forwarding() {
-    if [ ! -z "$forward_id" ]; then
-        printf "\033[33;1mDeleting old forwarding id=$forward_id\033[0m\n"
-        uci delete firewall.@forwarding[$forward_id]
-        uci commit firewall
+    if [ -n "$forward_id" ]; then
+        # Проверяем, существует ли правило
+        if uci -q get firewall.@forwarding[$forward_id] >/dev/null; then
+            printf "\033[33;1mDeleting forwarding id=%s\033[0m\n" "$forward_id"
+
+            uci delete firewall.@forwarding[$forward_id]
+            uci commit firewall
+
+            /etc/init.d/firewall reload
+        else
+            printf "\033[31;1mForwarding id=%s not found\033[0m\n" "$forward_id"
+        fi
+    else
+        echo "forward_id is empty, skipping"
     fi
 }
 

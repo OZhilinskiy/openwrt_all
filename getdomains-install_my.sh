@@ -1,5 +1,30 @@
 #!/bin/sh
 
+route_vpn() {
+    echo "Configuring VPN routing for WireGuard..."
+
+    # Добавляем таблицу vpn если её нет
+    grep -q '^200 vpn' /etc/iproute2/rt_tables 2>/dev/null || echo "200 vpn" >> /etc/iproute2/rt_tables
+
+    # Создаём hotplug-скрипт
+    cat << 'EOF' > /etc/hotplug.d/iface/30-vpnroute
+#!/bin/sh
+
+# выполняем только при поднятии интерфейса
+[ "$ACTION" = "ifup" ] || exit 0
+
+# только для wg0
+if [ "$INTERFACE" = "wg0" ]; then
+    echo "Adding default route to table vpn via wg0"
+    ip route add table vpn default dev wg0 2>/dev/null || true
+fi
+EOF
+
+    chmod +x /etc/hotplug.d/iface/30-vpnroute
+
+    echo "Done: wg0 will use routing table vpn"
+}
+
 add_wireguard() {
     echo "Configure WireGuard tunnel with optional DNSCrypt-proxy2"
 

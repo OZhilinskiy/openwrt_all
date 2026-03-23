@@ -9,12 +9,16 @@ WG_PUBLIC_KEY=""
 WG_PRESHARED_KEY=""
 WG_ENDPOINT_IP=""
 
-setup_split_vpn_domains() {
-    DOMAINS_URL="https://raw.githubusercontent.com/itdoginfo/allow-domains/main/Russia/inside-dnsmasq-nfset.lst"
-    echo "Using domain list: $DOMAINS_URL"
+#!/bin/sh
 
-    # ---------------- Установка пакетов ----------------
-    apk add curl dnsmasq-full 2>/dev/null
+# ---------------- ГЛОБАЛЬНЫЕ ПЕРЕМЕННЫЕ ----------------
+DOMAINS_URL="https://raw.githubusercontent.com/itdoginfo/allow-domains/main/Russia/inside-dnsmasq-nfset.lst"
+
+setup_split_vpn_domains() {
+    echo "🔹 Setting up split-tunnel for VPN domains..."
+
+    # ---------------- Пакеты ----------------
+    apk add ipset curl dnsmasq-full 2>/dev/null
 
     # ---------------- Таблица маршрутов ----------------
     grep -q '^200 vpn' /etc/iproute2/rt_tables 2>/dev/null || echo "200 vpn" >> /etc/iproute2/rt_tables
@@ -23,11 +27,13 @@ setup_split_vpn_domains() {
     # ---------------- Директория dnsmasq ----------------
     mkdir -p /tmp/dnsmasq.d
 
-    # ---------------- IPSET через UCI ----------------
+    # ---------------- IPSET ----------------
+    ipset list vpn_domains >/dev/null 2>&1 || ipset create vpn_domains hash:ip
+
     if ! uci show firewall | grep -q "@ipset.*name='vpn_domains'"; then
         uci add firewall ipset
         uci set firewall.@ipset[-1].name='vpn_domains'
-        uci set firewall.@ipset[-1].match='dest_ip'    # корректное значение
+        uci set firewall.@ipset[-1].match='dest_ip'
         uci set firewall.@ipset[-1].family='ipv4'
         uci commit firewall
     fi
@@ -35,6 +41,7 @@ setup_split_vpn_domains() {
     # ---------------- Правило fwmark ----------------
     if ! uci show firewall | grep -q "@rule.*name='mark_domains'"; then
         uci add firewall rule
+        uci set firewall.@rule[-1]=rule
         uci set firewall.@rule[-1].name='mark_domains'
         uci set firewall.@rule[-1].src='lan'
         uci set firewall.@rule[-1].dest='*'
@@ -45,14 +52,13 @@ setup_split_vpn_domains() {
         uci set firewall.@rule[-1].family='ipv4'
         uci commit firewall
     fi
-
     /etc/init.d/firewall restart
 
-    # ---------------- Загрузка основного списка ----------------
-    echo "Downloading VPN domain list..."
+    # ---------------- Основной список доменов ----------------
+    echo "Downloading domain list..."
     curl -s "$DOMAINS_URL" | sed 's/\/[^/]*$/\/vpn_domains/' > /tmp/dnsmasq.d/vpn_domains.conf
 
-    # ---------------- Добавление кастомных доменов из /etc/config/dhcp ----------------
+    # ---------------- Кастомные домены ----------------
     if uci show dhcp | grep -q "config ipset"; then
         uci show dhcp | grep "config ipset" | while read -r line; do
             DOMAIN=$(echo "$line" | sed -n "s/.*list domain '\([^']*\)'.*/\1/p")
@@ -60,8 +66,17 @@ setup_split_vpn_domains() {
         done
     fi
 
-    # ---------------- Перезапуск dnsmasq ----------------
     /etc/init.d/dnsmasq restart
+
+    # ---------------- Таблица маршрутов через wg0 ----------------
+    # Сбрасываем default route через wg0, если был full-tunnel
+    ip route del default dev wg0 2>/dev/null || true
+    uci set network.@wireguard_wg0[0].route_allowed_ips='0'
+    uci commit network
+    /etc/init.d/network restart
+
+    # Добавляем default route в таблицу vpn
+    ip route add table vpn default dev wg0 2>/dev/null || true
 
     # ---------------- Hotplug wg ----------------
     cat << 'EOF' > /etc/hotplug.d/iface/30-vpnroute
@@ -93,8 +108,6 @@ start() {
 EOF
     chmod +x /etc/init.d/update-vpn-domains
     /etc/init.d/update-vpn-domains enable
-
-    # ---------------- cron для автообновления каждые 6 часов ----------------
     (crontab -l 2>/dev/null | grep -v update-vpn-domains; echo "0 */6 * * * /etc/init.d/update-vpn-domains start") | crontab -
     /etc/init.d/cron restart
 

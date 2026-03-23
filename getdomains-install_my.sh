@@ -152,6 +152,25 @@ add_wireguard() {
     uci set network.@wireguard_wg0[0].endpoint_port="$WG_ENDPOINT_PORT"
     uci commit network
 
+    # ---------------- Firewall ----------------
+    echo "Configuring firewall..."
+    uci -q delete firewall.wg
+    uci set firewall.wg=zone
+    uci set firewall.wg.name='wg'
+    uci set firewall.wg.network='wg0'
+    uci set firewall.wg.input='REJECT'
+    uci set firewall.wg.forward='ACCEPT'
+    uci set firewall.wg.output='ACCEPT'
+    uci set firewall.wg.masq='1'
+
+    uci -q delete firewall.lan_wg
+    uci set firewall.lan_wg=forwarding
+    uci set firewall.lan_wg.src='lan'
+    uci set firewall.lan_wg.dest='wg'
+
+    uci commit firewall
+    /etc/init.d/firewall restart
+
     /etc/init.d/network restart
     echo "WireGuard and DNSCrypt-proxy2 configured successfully!"
 }

@@ -310,6 +310,7 @@ HOTPLUG
     echo ""
 }
 
+
 # ---------------- ФУНКЦИЯ ROUTE ----------------
 route_vpn() {
     echo "Select routing mode:"

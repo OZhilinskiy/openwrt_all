@@ -63,6 +63,7 @@ setup_split_vpn_domains() {
     /etc/init.d/dnscrypt-proxy stop 2>/dev/null
 
     cat > /etc/dnscrypt-proxy/dnscrypt-proxy.toml << 'EOF'
+# dnscrypt-proxy minimal config for OpenWrt
 listen_addresses = ['127.0.0.1:5353']
 max_clients = 250
 ipv4_servers = true
@@ -73,19 +74,16 @@ keepalive = 30
 lb_strategy = 'p2'
 log_level = 2
 log_file = '/var/log/dnscrypt-proxy.log'
-server_names = ['cloudflare', 'google', 'quad9-dnscrypt-ip4']
 
+# Прямые upstream сервера
+server_names = ['google', 'cloudflare', 'yandex']
+
+# Настройки серверов
 [sources]
-  [sources.public-resolvers]
-  urls = ['https://raw.githubusercontent.com/DNSCrypt/dnscrypt-resolvers/master/v3/public-resolvers.md']
-  cache_file = '/tmp/public-resolvers.md'
-  minisign_key = 'RWQf6LRCGA9i53mlYecO4IzT51TGPpvWucNSCh1CBM0QTaLn73Y7GFO3'
+  [sources.'fixed-servers']
+  urls = []
+  cache_file = '/tmp/fixed-servers.md'
   refresh_delay = 72
-
-require_dnssec = false
-require_nolog = true
-require_nofilter = true
-fallback_resolver = '8.8.8.8:53'
 EOF
 
     /etc/init.d/dnscrypt-proxy start

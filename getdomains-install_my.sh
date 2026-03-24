@@ -104,7 +104,8 @@ EOF
     /etc/init.d/cron restart
 
     echo "✅ Split-tunnel configured and auto-update enabled!"
-    echo "👉 Custom domains: $CUSTOM_FILE"
+    echo "👉 ADD Custom domains: $CUSTOM_FILE"
+    echo "👉 After ADD Custom domains run /etc/init.d/dnsmasq restart"
 }
 
 # ---------------- ФУНКЦИЯ ROUTE ----------------

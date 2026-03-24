@@ -38,7 +38,7 @@ log_level = 2
 log_file = '/var/log/dnscrypt-proxy.log'
 
 # Your DNS servers (no static section)
-server_names = ['google', 'cloudflare', 'scaleway-fr', 'yandex']
+server_names = ['google', 'scaleway-fr', 'yandex']
 
 # Sources for resolvers list
 [sources]

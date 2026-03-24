@@ -1,5 +1,7 @@
 #!/bin/sh
 
+#!/bin/sh
+
 setup_default_wan_vpn_domains() {
     local VPN_IFACE="wg0"
     local WAN_IFACE="wan"
@@ -26,7 +28,7 @@ setup_default_wan_vpn_domains() {
     
     echo "✅ VPN: $VPN_IFACE, WAN: $WAN_IFACE"
     
-    # ========== ШАГ 2: Установка пакетов (apk для OpenWrt 25) ==========
+    # ========== ШАГ 2: Установка пакетов ==========
     echo "2. Installing packages..."
     apk update
     apk add pbr dnsmasq-full nftables curl
@@ -38,8 +40,13 @@ setup_default_wan_vpn_domains() {
     mkdir -p /usr/local/bin
     mkdir -p /var/log
     
-    # ========== ШАГ 4: Настройка таблицы маршрутизации ==========
-    echo "4. Setting up VPN routing table..."
+    # ========== ШАГ 4: Остановка сервисов ==========
+    echo "4. Stopping services..."
+    /etc/init.d/pbr stop 2>/dev/null
+    /etc/init.d/dnsmasq stop 2>/dev/null
+    
+    # ========== ШАГ 5: Настройка таблицы маршрутизации ==========
+    echo "5. Setting up VPN routing table..."
     
     # Добавляем таблицу маршрутизации
     if ! grep -q "^200 $VPN_TABLE" /etc/iproute2/rt_tables; then
@@ -54,9 +61,8 @@ setup_default_wan_vpn_domains() {
     
     echo "✅ VPN routing table created"
     
-    # ========== ШАГ 5: Проверка основного маршрута через WAN ==========
-    echo "5. Verifying default route through WAN..."
-    
+    # ========== ШАГ 6: Проверка основного маршрута ==========
+    echo "6. Verifying default route through WAN..."
     DEFAULT_ROUTE=$(ip route show default | grep -v "table" | head -1)
     if [ -z "$DEFAULT_ROUTE" ]; then
         echo "⚠️  No default route found, please check WAN connection"
@@ -64,69 +70,63 @@ setup_default_wan_vpn_domains() {
         echo "  Default route: $DEFAULT_ROUTE"
     fi
     
-    # ========== ШАГ 6: Создание nftables set ==========
-    echo "6. Creating nftables set..."
+    # ========== ШАГ 7: Создание nftables set ==========
+    echo "7. Creating nftables set..."
     nft add table inet fw4 2>/dev/null || true
     nft delete set inet fw4 "$NFT_SET" 2>/dev/null || true
     nft add set inet fw4 "$NFT_SET" '{ type ipv4_addr; flags dynamic; }'
     echo "✅ nftset created: $NFT_SET"
-    
-    # ========== ШАГ 7: Настройка PBR ==========
-    echo "7. Configuring PBR..."
-    
-    # Очищаем старую конфигурацию
-    uci delete pbr 2>/dev/null
-    
-    # Базовая конфигурация через UCI
-    uci set pbr.config="pbr"
-    uci set pbr.config.enabled="1"
-    uci set pbr.config.verbosity="2"
-    uci set pbr.config.resolver_set="dnsmasq.nftset"
-    uci set pbr.config.strict_enforcement="0"
-    uci set pbr.config.boot_timeout="30"
-    uci set pbr.config.ipv6_enabled="0"
-    
-    # Настройка интерфейса VPN (wg0)
-    uci add pbr interface
-    uci set pbr.@interface[-1].name="wireguard"
-    uci set pbr.@interface[-1].enabled="1"
-    uci set pbr.@interface[-1].interface="$VPN_IFACE"
-    uci set pbr.@interface[-1].table="$VPN_TABLE"
-    uci set pbr.@interface[-1].fwmark="$VPN_MARK"
-    uci set pbr.@interface[-1].priority="1000"
-    uci set pbr.@interface[-1].metric="100"
-    
-    # Политика для доменов (только они идут через VPN)
-    uci add pbr policy
-    uci set pbr.@policy[-1].name="vpn_domains"
-    uci set pbr.@policy[-1].interface="wireguard"
-    uci set pbr.@policy[-1].enabled="1"
-    uci set pbr.@policy[-1].lookup="$VPN_TABLE"
-    uci set pbr.@policy[-1].priority="100"
-    uci set pbr.@policy[-1].proto="all"
-    uci set pbr.@policy[-1].nftset="4#inet#fw4#$NFT_SET"
-    
-    uci commit pbr
-    
-    echo "✅ PBR configured"
     
     # ========== ШАГ 8: Настройка правил маршрутизации ==========
     echo "8. Setting up routing rules..."
     
     # Удаляем старые правила
     ip rule del fwmark $VPN_MARK table $VPN_TABLE 2>/dev/null
+    ip rule del priority 1000 2>/dev/null
     
     # Добавляем правило: пакеты с маркером идут в таблицу VPN
     ip rule add fwmark $VPN_MARK table $VPN_TABLE priority 1000
     
-    echo "✅ Routing rule added: packets with mark $VPN_MARK → table $VPN_TABLE"
+    echo "✅ Routing rule added"
     
-    # ========== ШАГ 9: Настройка dnsmasq ==========
-    echo "9. Configuring dnsmasq..."
+    # ========== ШАГ 9: Настройка PBR ==========
+    echo "9. Configuring PBR..."
+    
+    # Создаем чистую конфигурацию PBR
+    cat > /etc/config/pbr << EOF
+config pbr 'config'
+    option enabled '1'
+    option verbosity '2'
+    option resolver_set 'dnsmasq.nftset'
+    option strict_enforcement '0'
+    option boot_timeout '30'
+    option ipv6_enabled '0'
+
+config interface
+    option name 'vpn'
+    option enabled '1'
+    option interface '$VPN_IFACE'
+    option table '$VPN_TABLE'
+    option fwmark '$VPN_MARK'
+    option priority '1000'
+
+config policy
+    option name 'vpn_domains'
+    option interface 'vpn'
+    option enabled '1'
+    option lookup '$VPN_TABLE'
+    option priority '100'
+    option nftset '4#inet#fw4#$NFT_SET'
+    option proto 'all'
+EOF
+    
+    echo "✅ PBR configured"
+    
+    # ========== ШАГ 10: Настройка dnsmasq ==========
+    echo "10. Configuring dnsmasq..."
     
     # Создаем конфигурацию для VPN доменов
     cat > /etc/dnsmasq.d/99-vpn-domains.conf << 'EOF'
-# VPN Domains - Traffic through WireGuard
 nftset=/2ip.ru/4#inet#fw4#vpn_domains
 nftset=/ifconfig.me/4#inet#fw4#vpn_domains
 nftset=/ipinfo.io/4#inet#fw4#vpn_domains
@@ -152,7 +152,7 @@ nftset=/nnm-club.me/4#inet#fw4#vpn_domains
 nftset=/kinozal.tv/4#inet#fw4#vpn_domains
 EOF
     
-    # ========== ШАГ 10: Создание файла для пользовательских доменов ==========
+    # ========== ШАГ 11: Создание файла для пользовательских доменов ==========
     cat > /etc/pbr/custom_domains.txt << 'EOF'
 # Add your custom domains here
 # One domain per line
@@ -161,12 +161,11 @@ EOF
 # *.my-domain.ru
 EOF
     
-    # ========== ШАГ 11: Добавление пользовательских доменов ==========
-    echo "10. Adding custom domains..."
+    # ========== ШАГ 12: Добавление пользовательских доменов ==========
+    echo "11. Adding custom domains..."
     
     if [ -f /etc/pbr/custom_domains.txt ]; then
         while IFS= read -r domain || [ -n "$domain" ]; do
-            # Пропускаем комментарии и пустые строки
             echo "$domain" | grep -q '^#' && continue
             [ -z "$domain" ] && continue
             domain=$(echo "$domain" | xargs)
@@ -185,24 +184,25 @@ EOF
     DOMAIN_COUNT=$(grep -c '^nftset=' /etc/dnsmasq.d/99-vpn-domains.conf 2>/dev/null || echo "0")
     echo "✅ Total domains configured: $DOMAIN_COUNT"
     
-    # ========== ШАГ 12: Включение логирования ==========
-    echo "11. Enabling logging..."
+    # ========== ШАГ 13: Включение логирования ==========
+    echo "12. Enabling logging..."
     uci set dhcp.@dnsmasq[0].logqueries=1
     uci set dhcp.@dnsmasq[0].logfacility="/var/log/dnsmasq.log"
     uci commit dhcp
     
-    # ========== ШАГ 13: Запуск сервисов ==========
-    echo "12. Starting services..."
+    # ========== ШАГ 14: Запуск сервисов в правильном порядке ==========
+    echo "13. Starting services..."
     
-    /etc/init.d/dnsmasq restart
-    sleep 2
-    
-    /etc/init.d/pbr enable
-    /etc/init.d/pbr restart
+    # Сначала запускаем dnsmasq
+    /etc/init.d/dnsmasq start
     sleep 3
     
-    # ========== ШАГ 14: Создание скрипта для управления доменами ==========
-    echo "13. Creating management script..."
+    # Затем запускаем PBR
+    /etc/init.d/pbr start
+    sleep 3
+    
+    # ========== ШАГ 15: Создание скрипта управления ==========
+    echo "14. Creating management script..."
     
     cat > /usr/local/bin/vpn-domain << 'EOF'
 #!/bin/sh
@@ -223,7 +223,6 @@ case "$1" in
             sort -u "$CONFIG_FILE" -o "$CONFIG_FILE"
             /etc/init.d/dnsmasq restart
             echo "✅ Added: $2"
-            echo "  Testing resolution..."
             nslookup "$2" 127.0.0.1 > /dev/null 2>&1
         fi
         ;;
@@ -250,8 +249,10 @@ case "$1" in
         IP_COUNT=$(nft list set inet fw4 "$NFT_SET" 2>/dev/null | grep -E '([0-9]{1,3}\.){3}[0-9]{1,3}' | wc -l)
         echo "Active IPs in VPN set: $IP_COUNT"
         echo ""
-        echo "Last 10 IPs added:"
-        nft list set inet fw4 "$NFT_SET" 2>/dev/null | grep -E '([0-9]{1,3}\.){3}[0-9]{1,3}' | tail -10
+        if [ $IP_COUNT -gt 0 ]; then
+            echo "Last 10 IPs added:"
+            nft list set inet fw4 "$NFT_SET" 2>/dev/null | grep -E '([0-9]{1,3}\.){3}[0-9]{1,3}' | tail -10
+        fi
         echo ""
         echo "Configured domains: $(grep -c '^nftset=' "$CONFIG_FILE" 2>/dev/null)"
         ;;
@@ -266,7 +267,6 @@ case "$1" in
         nslookup "$2" 127.0.0.1
         echo ""
         sleep 2
-        echo "Checking if IPs added to VPN set..."
         IP_COUNT=$(nft list set inet fw4 "$NFT_SET" 2>/dev/null | grep -E '([0-9]{1,3}\.){3}[0-9]{1,3}' | wc -l)
         echo "Total IPs in VPN set: $IP_COUNT"
         ;;
@@ -276,7 +276,6 @@ case "$1" in
             echo "Usage: vpn-domain route example.com"
             exit 1
         fi
-        echo "Checking route for domain: $2"
         IP=$(nslookup "$2" 127.0.0.1 2>/dev/null | grep "Address:" | tail -1 | awk '{print $2}')
         if [ -n "$IP" ]; then
             echo "IP: $IP"
@@ -312,7 +311,7 @@ EOF
     
     chmod +x /usr/local/bin/vpn-domain
     
-    # ========== ШАГ 15: Проверка ==========
+    # ========== ШАГ 16: Проверка работы ==========
     echo ""
     echo "=========================================="
     echo "VERIFICATION"
@@ -330,14 +329,12 @@ EOF
     ip rule show | grep -E "(fwmark|vpn)"
     
     echo ""
-    echo "4. PBR status:"
-    /etc/init.d/pbr status | head -5
-    
-    echo ""
-    echo "5. Testing domain resolution..."
-    echo "  Resolving 2ip.ru (VPN domain)..."
+    echo "4. Testing DNS resolution..."
+    echo "  Resolving 2ip.ru..."
     nslookup 2ip.ru 127.0.0.1 > /dev/null 2>&1
-    sleep 2
+    
+    echo "  Waiting for IPs to be added..."
+    sleep 5
     
     IP_COUNT=$(nft list set inet fw4 $NFT_SET 2>/dev/null | grep -E '([0-9]{1,3}\.){3}[0-9]{1,3}' | wc -l)
     echo "  IPs in VPN set: $IP_COUNT"
@@ -347,9 +344,20 @@ EOF
         echo ""
         echo "  Sample IPs:"
         nft list set inet fw4 $NFT_SET 2>/dev/null | grep -E '([0-9]{1,3}\.){3}[0-9]{1,3}' | head -5
+        
+        echo ""
+        echo "  Testing route for first IP:"
+        TEST_IP=$(nft list set inet fw4 $NFT_SET 2>/dev/null | grep -E '([0-9]{1,3}\.){3}[0-9]{1,3}' | head -1 | tr -d ' ,')
+        if [ -n "$TEST_IP" ]; then
+            ip route get "$TEST_IP"
+        fi
     else
         echo "  ⚠️  No IPs in VPN set yet"
-        echo "  Check: tail -f /var/log/dnsmasq.log"
+        echo ""
+        echo "  Check dnsmasq logs:"
+        tail -5 /var/log/dnsmasq.log 2>/dev/null || echo "  No logs yet"
+        echo ""
+        echo "  Try manual test: vpn-domain test 2ip.ru"
     fi
     
     echo ""

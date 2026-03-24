@@ -44,17 +44,14 @@ force_tcp = false
 timeout = 5000
 log_level = 2
 log_file = '/var/log/dnscrypt-proxy.log'
+server_names = ['google', 'scaleway-fr', 'yandex']
 
-# Static servers with correct stamps
-[static]
-  [static.'google']
-  stamp = 'sdns://AgUAAAAAAAAAACDySAtwhQVUlSgS8ZWkEdXbE0MneHNS9VHimNnN_XyFGWYuZG5zLmdvb2dsZS5jb20'
-  [static.'cloudflare']
-  stamp = 'sdns://AgcAAAAAAAAAB2Nsb3VkZmxhcmUIL2Rucy1xdWVyeQ9kbnMuY2xvdWRmbGFyZS5jb20'
-  [static.'scaleway-fr']
-  stamp = 'sdns://AgcAAAAAAAAADjIwMi4xLjQuMjU2OjQ0MwwvZG5zLXF1ZXJ5DnNjYWxld2F5LWZyLmZy'
-  [static.'yandex']
-  stamp = 'sdns://AQcAAAAAAAAADnlhbmRleC5ybnMtZG5zLmNvbQ'
+[sources]
+  [sources.'public-resolvers']
+  urls = ['https://raw.githubusercontent.com/DNSCrypt/dnscrypt-resolvers/master/v3/public-resolvers.md']
+  cache_file = '/tmp/public-resolvers.md'
+  minisign_key = 'RWQf6LRCGA9i53mlYecO4IzT51TGPpvWucNSCh1CBM0QTaLn73Y7GFO3'
+  refresh_delay = 72
 EOF
 
     # ---------------- Create procd init script ----------------
@@ -97,7 +94,7 @@ EOF
     # ---------------- Check if running ----------------
     if netstat -tulpn | grep -q 5353; then
         echo "✅ dnscrypt-proxy2 is running on 127.0.0.1:5353"
-        echo "   Servers: google, cloudflare, scaleway-fr, yandex"
+        echo "   Servers: google, scaleway-fr, yandex"
     else
         echo "⚠️ dnscrypt-proxy2 failed to start"
         tail -30 /var/log/dnscrypt-proxy.log 2>/dev/null

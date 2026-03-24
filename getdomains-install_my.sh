@@ -29,7 +29,7 @@ setup_split_vpn_domains() {
     nft list chain inet fw4 mangle_prerouting >/dev/null 2>&1 || \
         nft add chain inet fw4 mangle_prerouting '{ type filter hook prerouting priority mangle; }'
 
-    # 🔥 чистим chain (важно)
+    # чистим chain
     nft flush chain inet fw4 mangle_prerouting
 
     # правило маркировки
@@ -42,21 +42,38 @@ setup_split_vpn_domains() {
 
     # ---------------- dnsmasq ----------------
     mkdir -p /tmp/dnsmasq.d
-    mkdir -p /etc/vpn/
-    touch /etc/vpn/domains.lst
-    
+    mkdir -p /etc/vpn
+
+    [ -f "$CUSTOM_FILE" ] || touch "$CUSTOM_FILE"
+
     > "$CONF"
 
     echo "Downloading base list..."
     curl -s "$DOMAINS_URL" > "$CONF"
 
     echo "Adding custom domains..."
-    if [ -f "$CUSTOM_FILE" ]; then
-        while read -r DOMAIN; do
-            [ -z "$DOMAIN" ] && continue
-            echo "nftset=/$DOMAIN/inet#fw4#vpn_domains" >> "$CONF"
-        done < "$CUSTOM_FILE"
-    fi
+
+    COUNT=0
+
+    while read -r DOMAIN || [ -n "$DOMAIN" ]; do
+        # чистка
+        DOMAIN=$(echo "$DOMAIN" | tr -d '\r' | xargs)
+
+        # пропуск мусора
+        [ -z "$DOMAIN" ] && continue
+        echo "$DOMAIN" | grep -q "^#" && continue
+
+        echo " + $DOMAIN"
+
+        echo "nftset=/$DOMAIN/inet#fw4#vpn_domains" >> "$CONF"
+
+        COUNT=$((COUNT + 1))
+    done < "$CUSTOM_FILE"
+
+    echo "Added $COUNT custom domains"
+
+    echo "DEBUG last lines:"
+    tail -n 10 "$CONF"
 
     /etc/init.d/dnsmasq restart
 
@@ -75,23 +92,33 @@ EOF
 #!/bin/sh /etc/rc.common
 START=99
 start() {
-    echo "Updating VPN domain list..."
-
     DOMAINS_URL="$DOMAINS_URL"
     CUSTOM_FILE="$CUSTOM_FILE"
     CONF="/tmp/dnsmasq.d/vpn_domains.conf"
+
+    echo "Updating VPN domain list..."
 
     mkdir -p /tmp/dnsmasq.d
     > "\$CONF"
 
     curl -s "\$DOMAINS_URL" > "\$CONF"
 
+    COUNT=0
+
     if [ -f "\$CUSTOM_FILE" ]; then
-        while read -r DOMAIN; do
+        while read -r DOMAIN || [ -n "\$DOMAIN" ]; do
+            DOMAIN=\$(echo "\$DOMAIN" | tr -d '\r' | xargs)
+
             [ -z "\$DOMAIN" ] && continue
+            echo "\$DOMAIN" | grep -q "^#" && continue
+
             echo "nftset=/\$DOMAIN/inet#fw4#vpn_domains" >> "\$CONF"
+
+            COUNT=\$((COUNT + 1))
         done < "\$CUSTOM_FILE"
     fi
+
+    echo "Added \$COUNT custom domains"
 
     /etc/init.d/dnsmasq restart
 }
@@ -107,7 +134,8 @@ EOF
 
     echo "✅ Split-tunnel configured and auto-update enabled!"
     echo "👉 ADD Custom domains: $CUSTOM_FILE"
-    echo "👉 After ADD Custom domains run /etc/init.d/update-vpn-domains start"
+    echo "👉 After adding domains run:"
+    echo "   /etc/init.d/update-vpn-domains start"
 }
 
 # ---------------- ФУНКЦИЯ ROUTE ----------------

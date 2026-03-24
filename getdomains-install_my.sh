@@ -16,7 +16,7 @@ setup_split_vpn_domains() {
     PBR_SET="vpn_domains"
     
     echo "=========================================="
-    echo "Setting up Split VPN Routing with PBR"
+    echo "Setting up Split VPN Routing with PBR + dnscrypt-proxy2"
     echo "=========================================="
     echo "Base list: $BASE_URL"
     echo "Custom file: $CUSTOM_FILE"
@@ -42,15 +42,13 @@ setup_split_vpn_domains() {
     echo ""
     echo "[2/7] Installing packages..."
     apk update
-    # Пробуем разные варианты названия пакета dnscrypt
-    apk add curl pbr dnsmasq-full nftables
-    apk add dnscrypt-proxy 2>/dev/null || apk add dnscrypt-proxy2 2>/dev/null || echo "⚠️  dnscrypt-proxy not found, will use standard DNS"
+    apk add curl pbr dnsmasq-full nftables dnscrypt-proxy2
     echo "✅ Packages installed"
     
     # ---------------- директории ----------------
     echo ""
     echo "[3/7] Creating directories..."
-    mkdir -p /etc/vpn /etc/dnsmasq.d
+    mkdir -p /etc/vpn /etc/dnsmasq.d /etc/dnscrypt-proxy
     touch "$CUSTOM_FILE"
     echo "✅ Directories created"
     
@@ -61,68 +59,52 @@ setup_split_vpn_domains() {
     nft add set inet pbr $PBR_SET '{ type ipv4_addr; flags interval; auto-merge; }' 2>/dev/null || true
     echo "✅ nftables set created"
     
-    # ---------------- настройка dnscrypt-proxy (если установлен) ----------------
+    # ---------------- настройка dnscrypt-proxy2 ----------------
     echo ""
-    echo "[5/7] Configuring DNS resolver..."
+    echo "[5/7] Configuring dnscrypt-proxy2..."
     
-    # Проверяем, какой dnscrypt установлен
-    if [ -f /etc/init.d/dnscrypt-proxy2 ]; then
-        DNSCRYPT_INIT="dnscrypt-proxy2"
-        DNSCRYPT_CONFIG="/etc/dnscrypt-proxy2/dnscrypt-proxy.toml"
-        DNSCRYPT_DIR="/etc/dnscrypt-proxy2"
-    elif [ -f /etc/init.d/dnscrypt-proxy ]; then
-        DNSCRYPT_INIT="dnscrypt-proxy"
-        DNSCRYPT_CONFIG="/etc/dnscrypt-proxy/dnscrypt-proxy.toml"
-        DNSCRYPT_DIR="/etc/dnscrypt-proxy"
-    else
-        DNSCRYPT_INIT=""
-        echo "   dnscrypt-proxy not installed, using standard DNS"
-    fi
+    # Останавливаем сервисы
+    /etc/init.d/dnsmasq stop 2>/dev/null
+    /etc/init.d/dnscrypt-proxy stop 2>/dev/null
     
-    if [ -n "$DNSCRYPT_INIT" ]; then
-        echo "   Configuring $DNSCRYPT_INIT as upstream..."
-        
-        # Останавливаем сервисы
-        /etc/init.d/dnsmasq stop 2>/dev/null
-        /etc/init.d/$DNSCRYPT_INIT stop 2>/dev/null
-        
-        # Создаём конфиг для dnscrypt-proxy
-        mkdir -p "$DNSCRYPT_DIR"
-        cat > "$DNSCRYPT_CONFIG" << DNSCRYPT
+    # Создаём правильный конфиг для dnscrypt-proxy2
+    cat > /etc/dnscrypt-proxy/dnscrypt-proxy.toml << 'EOF'
 listen_addresses = ['127.0.0.1:5353']
+server_names = ['cloudflare', 'google']
 max_clients = 250
 ipv4_servers = true
 ipv6_servers = false
-require_dns_over_https = true
-require_nolog = true
-require_nofilter = true
 force_tcp = false
 timeout = 2500
 keepalive = 30
 lb_strategy = 'p2'
 log_level = 2
-DNSCRYPT
-        
-        # Создаём файл с серверами
-        echo "cloudflare" > "$DNSCRYPT_DIR/server_names.txt"
-        
-        # Настраиваем dnsmasq использовать dnscrypt-proxy
-        uci set dhcp.@dnsmasq[0].noresolv='1'
-        uci set dhcp.@dnsmasq[0].localuse='1'
-        uci set dhcp.@dnsmasq[0].server='127.0.0.1#5353'
-        uci commit dhcp
-        
-        echo "✅ $DNSCRYPT_INIT configured on port 5353"
-    else
-        # Используем стандартные DNS-серверы
-        echo "   Using standard DNS servers (Cloudflare, Google)..."
-        uci set dhcp.@dnsmasq[0].noresolv='1'
-        uci set dhcp.@dnsmasq[0].localuse='1'
-        uci set dhcp.@dnsmasq[0].server='1.1.1.1'
-        uci add_list dhcp.@dnsmasq[0].server='8.8.8.8'
-        uci commit dhcp
-        echo "✅ Standard DNS configured"
-    fi
+log_file = '/var/log/dnscrypt-proxy.log'
+
+[sources]
+  [sources.'public-resolvers']
+  urls = ['https://raw.githubusercontent.com/DNSCrypt/dnscrypt-resolvers/master/v3/public-resolvers.md']
+  cache_file = '/tmp/public-resolvers.md'
+  minisign_key = 'RWQf6LRCGA9i53mlYecO4IzT51TGPpvWucNSCh1CBM0QTaLn73Y7GFO3'
+  refresh_delay = 72
+EOF
+    
+    # Настраиваем dnsmasq использовать dnscrypt-proxy2 как upstream
+    uci set dhcp.@dnsmasq[0].noresolv='1'
+    uci set dhcp.@dnsmasq[0].localuse='1'
+    uci set dhcp.@dnsmasq[0].server='127.0.0.1#5353'
+    uci commit dhcp
+    
+    echo "✅ dnscrypt-proxy2 configured on port 5353"
+    
+    # ---------------- настройка DNS для самого роутера ----------------
+    echo ""
+    echo "   Configuring router DNS..."
+    cat > /etc/resolv.conf << EOF
+nameserver 8.8.8.8
+nameserver 1.1.1.1
+EOF
+    chattr +i /etc/resolv.conf 2>/dev/null || echo "   (resolv.conf protected)"
     
     # ---------------- скачиваем и конвертируем домены ----------------
     echo ""
@@ -143,13 +125,10 @@ DNSCRYPT
     # Добавляем кастомные домены
     if [ -f "$CUSTOM_FILE" ] && [ -s "$CUSTOM_FILE" ]; then
         echo "   Adding custom domains from $CUSTOM_FILE..."
-        CUSTOM_COUNT=$(grep -v '^#' "$CUSTOM_FILE" | grep -v '^$' | wc -l)
-        echo "   Adding $CUSTOM_COUNT custom domains"
-        
         while read -r DOMAIN; do
             [ -z "$DOMAIN" ] && continue
             echo "$DOMAIN" | grep -q "^#" && continue
-            DOMAIN=$(echo "$DOMAIN" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+            DOMAIN=$(echo "$DOMAIN" | xargs)
             [ -z "$DOMAIN" ] && continue
             echo "nftset=/$DOMAIN/4#inet#pbr#$PBR_SET" >> /etc/dnsmasq.d/vpn_domains.conf
         done < "$CUSTOM_FILE"
@@ -202,7 +181,7 @@ PBRCONF
     echo "✅ PBR and routing configured"
     
     # ---------------- скрипт обновления ----------------
-    cat > /etc/vpn/update-pbr-domains.sh << 'UPDATE'
+    cat > /etc/vpn/update-domains.sh << 'UPDATE'
 #!/bin/sh
 BASE_URL="https://raw.githubusercontent.com/itdoginfo/allow-domains/main/Russia/inside-dnsmasq-nfset.lst"
 CUSTOM_FILE="/etc/vpn/domains.lst"
@@ -221,7 +200,7 @@ if [ -f "$CUSTOM_FILE" ]; then
     while read -r DOMAIN; do
         [ -z "$DOMAIN" ] && continue
         echo "$DOMAIN" | grep -q "^#" && continue
-        DOMAIN=$(echo "$DOMAIN" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+        DOMAIN=$(echo "$DOMAIN" | xargs)
         [ -z "$DOMAIN" ] && continue
         echo "nftset=/$DOMAIN/4#inet#pbr#$PBR_SET" >> /etc/dnsmasq.d/vpn_domains.conf
     done < "$CUSTOM_FILE"
@@ -238,7 +217,7 @@ echo "Domain list updated: $(grep -c '^nftset=' /etc/dnsmasq.d/vpn_domains.conf)
 rm -f "$TEMP_LIST"
 UPDATE
     
-    chmod +x /etc/vpn/update-pbr-domains.sh
+    chmod +x /etc/vpn/update-domains.sh
     
     # ---------------- hotplug скрипт ----------------
     mkdir -p /etc/hotplug.d/iface
@@ -252,18 +231,16 @@ HOTPLUG
     chmod +x /etc/hotplug.d/iface/90-pbr-wg
     
     # ---------------- cron ----------------
-    (crontab -l 2>/dev/null | grep -v update-pbr-domains; \
-     echo "0 */6 * * * /etc/vpn/update-pbr-domains.sh") | crontab - 2>/dev/null
+    (crontab -l 2>/dev/null | grep -v update-domains; \
+     echo "0 */6 * * * /etc/vpn/update-domains.sh") | crontab - 2>/dev/null
     
     # ---------------- перезапуск сервисов ----------------
     echo ""
     echo "Starting services..."
     
-    # Запускаем dnscrypt-proxy если установлен
-    if [ -n "$DNSCRYPT_INIT" ]; then
-        /etc/init.d/$DNSCRYPT_INIT start
-        sleep 2
-    fi
+    # Запускаем dnscrypt-proxy2
+    /etc/init.d/dnscrypt-proxy start
+    sleep 3
     
     # Запускаем dnsmasq
     /etc/init.d/dnsmasq start
@@ -280,34 +257,28 @@ HOTPLUG
     echo "✅ Setup Complete!"
     echo "=========================================="
     echo ""
-    echo "📊 DNS Architecture:"
-    echo "  LAN Clients (192.168.2.0/24)"
-    echo "       ↓"
-    echo "  dnsmasq :53 (nftset + forwarding)"
-    if [ -n "$DNSCRYPT_INIT" ]; then
-        echo "       ↓"
-        echo "  $DNSCRYPT_INIT :5353 (DNS-over-HTTPS)"
-    else
-        echo "       ↓"
-        echo "  Upstream DNS: 1.1.1.1, 8.8.8.8"
-    fi
-    echo ""
     echo "📊 Service Status:"
     /etc/init.d/pbr status
     echo ""
     echo "📁 Config files:"
-    echo "  - Domains config:  /etc/dnsmasq.d/vpn_domains.conf ($DOMAIN_COUNT entries)"
-    echo "  - Custom domains:  $CUSTOM_FILE"
+    echo "  - dnscrypt-proxy: /etc/dnscrypt-proxy/dnscrypt-proxy.toml"
+    echo "  - Domains:        /etc/dnsmasq.d/vpn_domains.conf ($DOMAIN_COUNT entries)"
+    echo "  - Custom domains: $CUSTOM_FILE"
     echo ""
     echo "📌 ADD CUSTOM DOMAINS:"
     echo "  echo 'telegram.org' >> $CUSTOM_FILE"
-    echo "  /etc/vpn/update-pbr-domains.sh"
+    echo "  /etc/vpn/update-domains.sh"
     echo ""
     echo "📝 Commands:"
-    echo "  Update domains:     /etc/vpn/update-pbr-domains.sh"
+    echo "  Update domains:     /etc/vpn/update-domains.sh"
     echo "  Check nftables set: nft list set inet pbr $PBR_SET"
-    echo "  Check DNS ports:    netstat -tulpn | grep :53"
+    echo "  Check dnscrypt:     netstat -tulpn | grep 5353"
+    echo "  Check dnsmasq:      netstat -tulpn | grep :53"
     echo ""
+    echo "⚠️  Test: make DNS request from LAN client, then check set"
+    echo ""
+    echo "📊 DNS Chain:"
+    echo "  LAN Client → dnsmasq :53 (adds to nftset) → dnscrypt-proxy2 :5353 → Internet"
 }
 
 

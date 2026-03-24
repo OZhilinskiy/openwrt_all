@@ -42,7 +42,7 @@ setup_split_vpn_domains() {
     # ---------------- пакеты ----------------
     echo ""
     echo "[2/7] Installing packages..."
-    apk add curl pbr dnsmasq-full nftables
+    apk add curl pbr #dnsmasq-full nftables
     echo "✅ Packages installed"
     
     # ---------------- директории ----------------

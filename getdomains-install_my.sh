@@ -13,81 +13,193 @@ WG_ENDPOINT_IP=""
 setup_split_vpn_domains() {
     BASE_URL="https://raw.githubusercontent.com/itdoginfo/allow-domains/main/Russia/inside-dnsmasq-nfset.lst"
     CUSTOM_FILE="/etc/vpn/domains.lst"
-    VPR_FILE="/etc/vpn/vpr_domains.lst"
+    PBR_SET="vpn_domains"
+    VPN_IFACE="wg0"
 
-    echo "✅ Setting up VPN Policy Routing"
+    echo "✅ Setting up Policy-Based Routing with PBR (nftables)"
     echo "Base list: $BASE_URL"
     echo "Custom file: $CUSTOM_FILE"
-    echo "VPR domain file: $VPR_FILE"
+    echo "VPN interface: $VPN_IFACE"
 
     # ---------------- пакеты ----------------
-    apk add curl pbr 2>/dev/null
+    echo "Installing packages..."
+    
+    apk install curl pbr #dnsmasq-full nftables
 
     # ---------------- директории ----------------
-    mkdir -p /etc/vpn
+    mkdir -p /etc/vpn /etc/dnsmasq.d
     touch "$CUSTOM_FILE"
-    touch "$VPR_FILE"
+
+    # ---------------- создаём nftables set ----------------
+    echo "Creating nftables set..."
+    nft add table inet pbr 2>/dev/null || true
+    nft add set inet pbr $PBR_SET '{ type ipv4_addr; flags interval; auto-merge; }' 2>/dev/null || true
 
     # ---------------- обновляем список доменов ----------------
     echo "Downloading base domains..."
-    curl -s "$BASE_URL" > "$VPR_FILE"
+    TEMP_LIST="/tmp/vpn_domains.txt"
+    curl -s "$BASE_URL" > "$TEMP_LIST"
 
     if [ -f "$CUSTOM_FILE" ]; then
         echo "Adding custom domains..."
-        cat "$CUSTOM_FILE" >> "$VPR_FILE"
+        cat "$CUSTOM_FILE" >> "$TEMP_LIST"
     fi
 
-    # ---------------- конфиг vpn-policy-routing ----------------
-    if ! uci show vpn-policy-routing >/dev/null 2>&1; then
-        echo "Creating base config..."
-        uci set vpn-policy-routing.@config[0]=config
-        uci set vpn-policy-routing.@config[0].enabled='1'
-        uci set vpn-policy-routing.@config[0].verbose='1'
-        uci set vpn-policy-routing.@config[0].strict_enforcement='0'
-        uci set vpn-policy-routing.@config[0].dns='1'
-        uci commit vpn-policy-routing
+    # ---------------- создаём конфиг для dnsmasq ----------------
+    echo "Creating dnsmasq configuration..."
+    > /etc/dnsmasq.d/vpn_domains.conf
+
+    while read -r DOMAIN; do
+        # Пропускаем пустые строки и комментарии
+        [ -z "$DOMAIN" ] && continue
+        echo "$DOMAIN" | grep -q "^#" && continue
+        
+        # Формат: nftset=/domain/4#inet#pbr#setname
+        echo "nftset=/$DOMAIN/4#inet#pbr#$PBR_SET" >> /etc/dnsmasq.d/vpn_domains.conf
+    done < "$TEMP_LIST"
+
+    DOMAIN_COUNT=$(grep -c '^nftset=' /etc/dnsmasq.d/vpn_domains.conf)
+    echo "Added $DOMAIN_COUNT domains to configuration"
+
+    # ---------------- настройка PBR через UCI ----------------
+    echo "Configuring PBR..."
+    
+    # Базовая конфигурация PBR
+    uci set pbr.config=pbr
+    uci set pbr.config.enabled='1'
+    uci set pbr.config.verbosity='2'
+    uci set pbr.config.resolver_set='dnsmasq.nftset'
+    uci set pbr.config.strict_enforcement='0'
+    uci set pbr.config.boot_timeout='30'
+    uci set pbr.config.ipv6_enabled='0'
+    uci set pbr.config.nft_rule_counter='0'
+    uci set pbr.config.nft_set_auto_merge='1'
+    
+    # Добавляем политику
+    uci add pbr policy
+    uci set pbr.@policy[-1].name='vpn_domains'
+    uci set pbr.@policy[-1].interface="$VPN_IFACE"
+    uci set pbr.@policy[-1].dest_addr="$PBR_SET.set"
+    uci set pbr.@policy[-1].enabled='1'
+    uci set pbr.@policy[-1].proto='all'
+    uci set pbr.@policy[-1].chain='prerouting'
+    
+    uci commit pbr
+
+    # ---------------- настройка маршрутизации ----------------
+    echo "Configuring routing..."
+    
+    # Добавляем таблицу маршрутизации
+    if ! grep -q '^200 vpn' /etc/iproute2/rt_tables 2>/dev/null; then
+        echo "200 vpn" >> /etc/iproute2/rt_tables
     fi
-
-    # ---------------- добавляем политику ----------------
-    uci add vpn-policy-routing policy
-    POLICY_INDEX=$(uci show vpn-policy-routing | grep "=policy" | tail -n1 | cut -d '[' -f2 | cut -d ']' -f1)
-    uci set vpn-policy-routing.@policy[$POLICY_INDEX].name='VPN Domains'
-    uci set vpn-policy-routing.@policy[$POLICY_INDEX].interface='wg0'
-    uci set vpn-policy-routing.@policy[$POLICY_INDEX].proto='all'
-    uci set vpn-policy-routing.@policy[$POLICY_INDEX].domains_file="$VPR_FILE"
-    uci commit vpn-policy-routing
-
-    # ---------------- перезапуск ----------------
-    /etc/init.d/vpn-policy-routing restart
-    /etc/init.d/vpn-policy-routing enable
+    
+    # Добавляем правило для маркированных пакетов (pbr использует марку 0x10000)
+    ip rule add fwmark 0x10000 table vpn 2>/dev/null || true
+    
+    # Добавляем маршрут в таблице vpn
+    ip route add table vpn default dev "$VPN_IFACE" 2>/dev/null || true
 
     # ---------------- скрипт обновления ----------------
-    cat << 'EOF' > /etc/vpn/update-vpr-domains.sh
+    echo "Creating update script..."
+    cat > /etc/vpn/update-pbr-domains.sh << EOF
 #!/bin/sh
-BASE_URL="https://raw.githubusercontent.com/itdoginfo/allow-domains/main/Russia/inside-dnsmasq-nfset.lst"
-CUSTOM_FILE="/etc/vpn/domains.lst"
-VPR_FILE="/etc/vpn/vpr_domains.lst"
+BASE_URL="$BASE_URL"
+CUSTOM_FILE="$CUSTOM_FILE"
+PBR_SET="$PBR_SET"
+TEMP_LIST="/tmp/vpn_domains_updated.txt"
 
-mkdir -p /etc/vpn
-curl -s "$BASE_URL" > "$VPR_FILE"
+echo "Updating VPN domain list..."
 
-if [ -f "$CUSTOM_FILE" ]; then
-    cat "$CUSTOM_FILE" >> "$VPR_FILE"
+# Скачиваем список
+curl -s "\$BASE_URL" > "\$TEMP_LIST"
+
+# Добавляем кастомные домены
+if [ -f "\$CUSTOM_FILE" ]; then
+    cat "\$CUSTOM_FILE" >> "\$TEMP_LIST"
 fi
 
-/etc/init.d/vpn-policy-routing restart
+# Обновляем конфиг dnsmasq
+> /etc/dnsmasq.d/vpn_domains.conf
+
+while read -r DOMAIN; do
+    [ -z "\$DOMAIN" ] && continue
+    echo "\$DOMAIN" | grep -q "^#" && continue
+    echo "nftset=/\$DOMAIN/4#inet#pbr#\$PBR_SET" >> /etc/dnsmasq.d/vpn_domains.conf
+done < "\$TEMP_LIST"
+
+# Перезапускаем dnsmasq
+/etc/init.d/dnsmasq restart
+
+# Перезапускаем PBR
+/etc/init.d/pbr restart
+
+echo "Domain list updated: \$(grep -c '^nftset=' /etc/dnsmasq.d/vpn_domains.conf) domains"
+
+rm -f "\$TEMP_LIST"
 EOF
-    chmod +x /etc/vpn/update-vpr-domains.sh
+    
+    chmod +x /etc/vpn/update-pbr-domains.sh
+
+    # ---------------- init скрипт для автообновления ----------------
+    echo "Creating init script..."
+    cat > /etc/init.d/update-vpn-domains << 'EOF'
+#!/bin/sh /etc/rc.common
+START=99
+USE_PROCD=0
+
+start() {
+    /etc/vpn/update-pbr-domains.sh
+    logger -t vpn-domains "Domain list updated via init"
+}
+
+stop() {
+    logger -t vpn-domains "Update service stopped"
+}
+EOF
+    
+    chmod +x /etc/init.d/update-vpn-domains
+    /etc/init.d/update-vpn-domains enable
 
     # ---------------- cron ----------------
-    (crontab -l 2>/dev/null | grep -v update-vpr-domains; \
-    echo "0 */6 * * * /etc/vpn/update-vpr-domains.sh") | crontab -
+    echo "Setting up cron..."
+    (crontab -l 2>/dev/null | grep -v update-pbr-domains; \
+     echo "0 */6 * * * /etc/vpn/update-pbr-domains.sh") | crontab -
 
+    # ---------------- запуск ----------------
+    echo "Starting services..."
+    
+    # Запускаем dnsmasq с новой конфигурацией
+    /etc/init.d/dnsmasq restart
+    
+    # Запускаем PBR
+    /etc/init.d/pbr enable
+    /etc/init.d/pbr start
+    
+    # Запускаем cron
+    /etc/init.d/cron restart
+
+    # ---------------- проверка ----------------
+    echo ""
     echo "✅ Setup complete!"
-    echo "👉 Add custom domains in $CUSTOM_FILE"
-    echo "👉 Manual update: /etc/vpn/update-vpr-domains.sh"
-    echo "👉 Cron auto-update every 6 hours"
+    echo ""
+    echo "📊 Status check:"
+    echo "  - nftables set: $(nft list set inet pbr $PBR_SET 2>/dev/null | grep -c '^[0-9]' || echo "empty")"
+    echo "  - PBR status: $(/etc/init.d/pbr status 2>/dev/null | grep -c running || echo "checking...")"
+    echo ""
+    echo "📝 Useful commands:"
+    echo "  - Manual update: /etc/vpn/update-pbr-domains.sh"
+    echo "  - Add custom domains: $CUSTOM_FILE"
+    echo "  - Check PBR rules: nft list chain inet pbr pbr_prerouting"
+    echo "  - View logs: logread | grep -E '(pbr|vpn-domains)'"
+    echo "  - Check routing: ip route show table vpn"
+    echo ""
+    echo "🔍 Debug if not working:"
+    echo "  - Check nftables set: nft list sets inet pbr"
+    echo "  - Check dnsmasq config: cat /etc/dnsmasq.d/vpn_domains.conf | head -5"
+    echo "  - Restart services: /etc/init.d/dnsmasq restart; /etc/init.d/pbr restart"
 }
+
 
 # ---------------- ФУНКЦИЯ ROUTE ----------------
 route_vpn() {

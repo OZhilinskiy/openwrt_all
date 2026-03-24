@@ -22,18 +22,24 @@ setup_split_vpn_domains() {
 
     # ---------------- nftables ----------------
     nft list table inet fw4 >/dev/null 2>&1 || nft add table inet fw4
-
     nft list set inet fw4 vpn_domains >/dev/null 2>&1 || \
         nft add set inet fw4 vpn_domains '{ type ipv4_addr; flags dynamic; }'
 
     nft list chain inet fw4 mangle_prerouting >/dev/null 2>&1 || \
         nft add chain inet fw4 mangle_prerouting '{ type filter hook prerouting priority mangle; }'
+    nft list chain inet fw4 mangle_output >/dev/null 2>&1 || \
+        nft add chain inet fw4 mangle_output '{ type filter hook output priority mangle; }'
 
-    # чистим chain
+    # 🔥 чистим chain
     nft flush chain inet fw4 mangle_prerouting
+    nft flush chain inet fw4 mangle_output
 
-    # правило маркировки
+    # правило маркировки + лог для отладки
     nft add rule inet fw4 mangle_prerouting ip daddr @vpn_domains meta mark set 0x1
+    nft add rule inet fw4 mangle_prerouting ip daddr @vpn_domains meta mark set 0x1 log prefix "VPN MARK PREROUTING: "
+
+    nft add rule inet fw4 mangle_output ip daddr @vpn_domains meta mark set 0x1
+    nft add rule inet fw4 mangle_output ip daddr @vpn_domains meta mark set 0x1 log prefix "VPN MARK OUTPUT: "
 
     # ---------------- маршрутизация ----------------
     grep -q '^200 vpn' /etc/iproute2/rt_tables 2>/dev/null || echo "200 vpn" >> /etc/iproute2/rt_tables
@@ -41,39 +47,20 @@ setup_split_vpn_domains() {
     ip route add table vpn default dev wg0 2>/dev/null || true
 
     # ---------------- dnsmasq ----------------
-    mkdir -p /tmp/dnsmasq.d
-    mkdir -p /etc/vpn
-
-    [ -f "$CUSTOM_FILE" ] || touch "$CUSTOM_FILE"
-
+    mkdir -p /tmp/dnsmasq.d /etc/vpn
+    touch "$CUSTOM_FILE"
     > "$CONF"
 
     echo "Downloading base list..."
     curl -s "$DOMAINS_URL" > "$CONF"
 
     echo "Adding custom domains..."
-
-    COUNT=0
-
-    while read -r DOMAIN || [ -n "$DOMAIN" ]; do
-        # чистка
-        DOMAIN=$(echo "$DOMAIN" | tr -d '\r' | xargs)
-
-        # пропуск мусора
-        [ -z "$DOMAIN" ] && continue
-        echo "$DOMAIN" | grep -q "^#" && continue
-
-        echo " + $DOMAIN"
-
-        echo "nftset=/$DOMAIN/inet#fw4#vpn_domains" >> "$CONF"
-
-        COUNT=$((COUNT + 1))
-    done < "$CUSTOM_FILE"
-
-    echo "Added $COUNT custom domains"
-
-    echo "DEBUG last lines:"
-    tail -n 10 "$CONF"
+    if [ -f "$CUSTOM_FILE" ]; then
+        while read -r DOMAIN; do
+            [ -z "$DOMAIN" ] && continue
+            echo "nftset=/$DOMAIN/inet#fw4#vpn_domains" >> "$CONF"
+        done < "$CUSTOM_FILE"
+    fi
 
     /etc/init.d/dnsmasq restart
 
@@ -92,33 +79,23 @@ EOF
 #!/bin/sh /etc/rc.common
 START=99
 start() {
+    echo "Updating VPN domain list..."
+
     DOMAINS_URL="$DOMAINS_URL"
     CUSTOM_FILE="$CUSTOM_FILE"
     CONF="/tmp/dnsmasq.d/vpn_domains.conf"
-
-    echo "Updating VPN domain list..."
 
     mkdir -p /tmp/dnsmasq.d
     > "\$CONF"
 
     curl -s "\$DOMAINS_URL" > "\$CONF"
 
-    COUNT=0
-
     if [ -f "\$CUSTOM_FILE" ]; then
-        while read -r DOMAIN || [ -n "\$DOMAIN" ]; do
-            DOMAIN=\$(echo "\$DOMAIN" | tr -d '\r' | xargs)
-
+        while read -r DOMAIN; do
             [ -z "\$DOMAIN" ] && continue
-            echo "\$DOMAIN" | grep -q "^#" && continue
-
             echo "nftset=/\$DOMAIN/inet#fw4#vpn_domains" >> "\$CONF"
-
-            COUNT=\$((COUNT + 1))
         done < "\$CUSTOM_FILE"
     fi
-
-    echo "Added \$COUNT custom domains"
 
     /etc/init.d/dnsmasq restart
 }
@@ -126,16 +103,14 @@ EOF
 
     chmod +x /etc/init.d/update-vpn-domains
     /etc/init.d/update-vpn-domains enable
-
     (crontab -l 2>/dev/null | grep -v update-vpn-domains; \
     echo "0 */6 * * * /etc/init.d/update-vpn-domains start") | crontab -
-
     /etc/init.d/cron restart
 
     echo "✅ Split-tunnel configured and auto-update enabled!"
-    echo "👉 ADD Custom domains: $CUSTOM_FILE"
-    echo "👉 After adding domains run:"
-    echo "   /etc/init.d/update-vpn-domains start"
+    echo "👉 Add custom domains in $CUSTOM_FILE"
+    echo "👉 After adding run: /etc/init.d/update-vpn-domains start"
+    echo "👉 For debugging traffic use: logread | grep 'VPN MARK'"
 }
 
 # ---------------- ФУНКЦИЯ ROUTE ----------------

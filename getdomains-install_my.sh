@@ -17,7 +17,8 @@ setup_dnscrypt_proxy() {
 
     # ---------------- Install ----------------
     apk update
-    apk add dnscrypt-proxy
+    apk del dnscrypt-proxy
+    apk add dnscrypt-proxy2
 
     # ---------------- Stop existing service ----------------
     killall dnscrypt-proxy 2>/dev/null

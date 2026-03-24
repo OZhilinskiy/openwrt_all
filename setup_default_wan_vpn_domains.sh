@@ -91,6 +91,9 @@ setup_default_wan_vpn_domains() {
     
     # ========== ШАГ 9: Настройка PBR ==========
     echo "9. Configuring PBR..."
+
+    rm -f /etc/config/pbr
+    rm -f /tmp/pbr_*
     
     # Создаем чистую конфигурацию PBR
     cat > /etc/config/pbr << EOF

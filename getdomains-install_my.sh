@@ -50,7 +50,10 @@ setup_split_vpn_domains() {
     echo "[3/7] Creating directories..."
     mkdir -p /etc/vpn /etc/dnsmasq.d /etc/dnscrypt-proxy
     touch "$CUSTOM_FILE"
-    echo "✅ Directories created"
+    
+    # Удаляем старый мусорный файл, который ломает dnsmasq
+    rm -f /etc/dnsmasq.d/vpn_domains_ipset.conf
+    echo "✅ Directories created, old junk removed"
     
     # ---------------- создаём nftables set ----------------
     echo ""
@@ -64,7 +67,7 @@ setup_split_vpn_domains() {
     echo "[5/7] Configuring dnscrypt-proxy2..."
     
     # Останавливаем сервисы
-    /etc/init.d/dnsmasq stop 2>/dev/null
+    killall dnsmasq dnscrypt-proxy 2>/dev/null
     /etc/init.d/dnscrypt-proxy stop 2>/dev/null
     
     # Создаём правильный конфиг для dnscrypt-proxy2
@@ -180,7 +183,7 @@ PBRCONF
     
     echo "✅ PBR and routing configured"
     
-    # ---------------- скрипт обновления ----------------
+    # ---------------- скрипт обновления (с удалением мусора) ----------------
     cat > /etc/vpn/update-domains.sh << 'UPDATE'
 #!/bin/sh
 BASE_URL="https://raw.githubusercontent.com/itdoginfo/allow-domains/main/Russia/inside-dnsmasq-nfset.lst"
@@ -189,6 +192,9 @@ PBR_SET="vpn_domains"
 TEMP_LIST="/tmp/vpn_domains_updated.txt"
 
 echo "Updating VPN domain list..."
+
+# Удаляем старый мусорный файл
+rm -f /etc/dnsmasq.d/vpn_domains_ipset.conf
 
 curl -s -o "$TEMP_LIST" "$BASE_URL"
 
@@ -209,7 +215,11 @@ fi
 # Удаляем дубликаты
 sort -u /etc/dnsmasq.d/vpn_domains.conf -o /etc/dnsmasq.d/vpn_domains.conf
 
-/etc/init.d/dnsmasq restart
+# Перезапускаем dnsmasq
+killall dnsmasq 2>/dev/null
+/usr/sbin/dnsmasq
+
+# Перезапускаем PBR
 /etc/init.d/pbr restart
 
 echo "Domain list updated: $(grep -c '^nftset=' /etc/dnsmasq.d/vpn_domains.conf) domains"
@@ -243,7 +253,8 @@ HOTPLUG
     sleep 3
     
     # Запускаем dnsmasq
-    /etc/init.d/dnsmasq start
+    killall dnsmasq 2>/dev/null
+    /usr/sbin/dnsmasq
     
     # Запускаем PBR
     /etc/init.d/pbr enable

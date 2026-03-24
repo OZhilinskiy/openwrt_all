@@ -9,6 +9,104 @@ WG_PUBLIC_KEY=""
 WG_PRESHARED_KEY=""
 WG_ENDPOINT_IP=""
 
+setup_dnscrypt_proxy() {
+    echo "=========================================="
+    echo "Setting up dnscrypt-proxy2 with server names"
+    echo "=========================================="
+
+    # ---------------- Install ----------------
+    apk update
+    apk add dnscrypt-proxy2
+
+    # ---------------- Stop existing service ----------------
+    killall dnscrypt-proxy 2>/dev/null
+    /etc/init.d/dnscrypt-proxy stop 2>/dev/null
+
+    # ---------------- Create config with server_names ----------------
+    mkdir -p /etc/dnscrypt-proxy
+    cat > /etc/dnscrypt-proxy/dnscrypt-proxy.toml << 'EOF'
+listen_addresses = ['127.0.0.1:5353']
+max_clients = 250
+ipv4_servers = true
+ipv6_servers = false
+force_tcp = false
+timeout = 2500
+log_level = 2
+log_file = '/var/log/dnscrypt-proxy.log'
+
+# Your DNS servers
+server_names = ['google', 'cloudflare', 'scaleway-fr', 'yandex']
+
+# Sources for resolvers list
+[sources]
+  [sources.'public-resolvers']
+  urls = ['https://raw.githubusercontent.com/DNSCrypt/dnscrypt-resolvers/master/v3/public-resolvers.md']
+  cache_file = '/tmp/public-resolvers.md'
+  minisign_key = 'RWQf6LRCGA9i53mlYecO4IzT51TGPpvWucNSCh1CBM0QTaLn73Y7GFO3'
+  refresh_delay = 72
+EOF
+
+    # ---------------- Start dnscrypt-proxy ----------------
+    /etc/init.d/dnscrypt-proxy start
+    echo "Waiting for dnscrypt-proxy to download resolvers list..."
+    
+    # Wait for resolvers list to download (max 30 seconds)
+    for i in $(seq 1 30); do
+        if [ -f /tmp/public-resolvers.md ]; then
+            echo "✅ Resolvers list downloaded"
+            break
+        fi
+        sleep 1
+    done
+    
+    sleep 3
+
+    # ---------------- Check if running ----------------
+    if netstat -tulpn | grep -q 5353; then
+        echo "✅ dnscrypt-proxy2 is running on port 5353"
+        echo "   Servers: google, cloudflare, scaleway-fr, yandex"
+    else
+        echo "⚠️ dnscrypt-proxy2 failed to start"
+        tail -20 /var/log/dnscrypt-proxy.log 2>/dev/null
+        return 1
+    fi
+
+    # ---------------- Configure dnsmasq ----------------
+    uci set dhcp.@dnsmasq[0].noresolv='1'
+    uci set dhcp.@dnsmasq[0].localuse='1'
+    uci add_list dhcp.@dnsmasq[0].server='127.0.0.1#5353'
+    uci commit dhcp
+
+    /etc/init.d/dnsmasq restart
+
+    # ---------------- Create init script ----------------
+    cat > /etc/init.d/dnscrypt-proxy << 'EOF'
+#!/bin/sh /etc/rc.common
+
+START=95
+STOP=10
+
+start() {
+    /usr/sbin/dnscrypt-proxy -config /etc/dnscrypt-proxy/dnscrypt-proxy.toml &
+    sleep 2
+}
+
+stop() {
+    killall dnscrypt-proxy 2>/dev/null
+}
+EOF
+    chmod +x /etc/init.d/dnscrypt-proxy
+    /etc/init.d/dnscrypt-proxy enable
+
+    echo ""
+    echo "=========================================="
+    echo "✅ dnscrypt-proxy2 configured!"
+    echo "=========================================="
+    echo "📊 Servers: google, cloudflare, scaleway-fr, yandex"
+    echo "📊 Check: netstat -tulpn | grep 5353"
+    echo "📊 Test: nslookup -port=5353 google.com 127.0.0.1"
+}
+
 setup_split_vpn_domains() {
     BASE_URL="https://raw.githubusercontent.com/itdoginfo/allow-domains/main/Russia/inside-dnsmasq-nfset.lst"
     CUSTOM_FILE="/etc/vpn/domains.lst"
@@ -44,37 +142,7 @@ setup_split_vpn_domains() {
     fi
 
     # ---------------- dnscrypt-proxy2 ----------------
-    killall dnsmasq dnscrypt-proxy 2>/dev/null
-    /etc/init.d/dnscrypt-proxy stop 2>/dev/null
-
-    cat > /etc/dnscrypt-proxy/dnscrypt-proxy.toml << 'EOF'
-listen_addresses = ['127.0.0.1:5353']
-max_clients = 250
-ipv4_servers = true
-ipv6_servers = false
-force_tcp = false
-timeout = 2500
-log_level = 2
-log_file = '/var/log/dnscrypt-proxy.log'
-
-[static]
-  [static.'cloudflare']
-  stamp = 'sdns://AgcAAAAAAAAAB2Nsb3VkZmxhcmUKL2Rucy1xdWVyeQ9kbnMuY2xvdWRmbGFyZS5jb20KL2Rucy1xdWVyeQ'
-  [static.'google']
-  stamp = 'sdns://AgUAAAAAAAAAACDySAtwhQVUlSgS8ZWkEdXbE0MneHNS9VHimNnN_XyFGWYuZG5zLmdvb2dsZS5jb20'
-  [static.'yandex']
-  stamp = 'sdns://AQcAAAAAAAAADnlhbmRleC5ybnMtZG5zLmNvbQ'
-EOF
-
-    /etc/init.d/dnscrypt-proxy start
-    sleep 2
-
-    # ---------------- dnsmasq upstream ----------------
-    uci set dhcp.@dnsmasq[0].noresolv='1'
-    uci set dhcp.@dnsmasq[0].localuse='1'
-    uci add_list dhcp.@dnsmasq[0].server='127.0.0.1#5353'
-    uci commit dhcp
-    /etc/init.d/dnsmasq restart
+    setup_dnscrypt_proxy
 
     # ---------------- Download + convert domain list ----------------
     TEMP_LIST="/tmp/vpn_domains.txt"

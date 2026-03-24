@@ -13,7 +13,7 @@ WG_ENDPOINT_IP=""
 
 setup_dnscrypt_proxy() {
     echo "=========================================="
-    echo "Setting up dnscrypt-proxy2 with fixed stamps"
+    echo "Setting up dnscrypt-proxy2 with static stamps"
     echo "=========================================="
 
     # ---------------- Remove old dnscrypt-proxy ----------------
@@ -27,11 +27,25 @@ setup_dnscrypt_proxy() {
     apk update
     apk add dnscrypt-proxy2
 
-    # ---------------- Stop any running instance ----------------
+    # ---------------- Stop running instance ----------------
     killall dnscrypt-proxy 2>/dev/null
 
-    # ---------------- Create config with fixed stamps ----------------
+    # ---------------- Create directories ----------------
     mkdir -p /etc/dnscrypt-proxy
+
+    # ---------------- Create static_servers.toml ----------------
+    cat > /etc/dnscrypt-proxy/static_servers.toml << 'EOF'
+[google]
+stamp = "sdns://AQAAAAAAAAAADjE3Mi4xNy4xOS4xOjQ0Mw"
+
+[yandex]
+stamp = "sdns://AQAAAAAAAAAAADk3LjEyMC42Mi44OjQ0Mw"
+
+[scaleway-fr]
+stamp = "sdns://AgcAAAAAAAAADjE0Ni45Mi44Ni45OjQ1Mw"
+EOF
+
+    # ---------------- Create main config dnscrypt-proxy.toml ----------------
     cat > /etc/dnscrypt-proxy/dnscrypt-proxy.toml << 'EOF'
 listen_addresses = ['127.0.0.1:5353']
 server_names = ['google', 'yandex', 'scaleway-fr']
@@ -42,15 +56,6 @@ force_tcp = false
 timeout = 10000
 log_level = 2
 log_file = '/var/log/dnscrypt-proxy.log'
-
-[google]
-stamp = "sdns://AQAAAAAAAAAADjE3Mi4xNy4xOS4xOjQ0Mw"
-
-[yandex]
-stamp = "sdns://AQAAAAAAAAAAADk3LjEyMC42Mi44OjQ0Mw"
-
-[scaleway-fr]
-stamp = "sdns://AgcAAAAAAAAADjE0Ni45Mi44Ni45OjQ1Mw"
 EOF
 
     # ---------------- Create procd init script ----------------
@@ -97,7 +102,7 @@ EOF
     fi
 
     echo "=========================================="
-    echo "✅ dnscrypt-proxy2 fully configured with fixed stamps!"
+    echo "✅ dnscrypt-proxy2 fully configured with static stamps!"
     echo "Test: nslookup -port=5353 google.com 127.0.0.1"
 }
 

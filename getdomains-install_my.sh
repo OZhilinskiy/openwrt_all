@@ -9,7 +9,6 @@ WG_PUBLIC_KEY=""
 WG_PRESHARED_KEY=""
 WG_ENDPOINT_IP=""
 
-
 setup_split_vpn_domains() {
     BASE_URL="https://raw.githubusercontent.com/itdoginfo/allow-domains/main/Russia/inside-dnsmasq-nfset.lst"
     CUSTOM_FILE="/etc/vpn/domains.lst"
@@ -42,7 +41,10 @@ setup_split_vpn_domains() {
     # ---------------- пакеты ----------------
     echo ""
     echo "[2/7] Installing packages..."
-    apk add curl pbr dnsmasq-full nftables dnscrypt-proxy2
+    apk update
+    # Пробуем разные варианты названия пакета dnscrypt
+    apk add curl pbr dnsmasq-full nftables
+    apk add dnscrypt-proxy 2>/dev/null || apk add dnscrypt-proxy2 2>/dev/null || echo "⚠️  dnscrypt-proxy not found, will use standard DNS"
     echo "✅ Packages installed"
     
     # ---------------- директории ----------------
@@ -59,22 +61,39 @@ setup_split_vpn_domains() {
     nft add set inet pbr $PBR_SET '{ type ipv4_addr; flags interval; auto-merge; }' 2>/dev/null || true
     echo "✅ nftables set created"
     
-    # ---------------- настройка dnscrypt-proxy2 ----------------
+    # ---------------- настройка dnscrypt-proxy (если установлен) ----------------
     echo ""
-    echo "[5/7] Configuring dnscrypt-proxy2 as upstream..."
+    echo "[5/7] Configuring DNS resolver..."
     
-    # Останавливаем сервисы
-    /etc/init.d/dnsmasq stop 2>/dev/null
-    /etc/init.d/dnscrypt-proxy2 stop 2>/dev/null
+    # Проверяем, какой dnscrypt установлен
+    if [ -f /etc/init.d/dnscrypt-proxy2 ]; then
+        DNSCRYPT_INIT="dnscrypt-proxy2"
+        DNSCRYPT_CONFIG="/etc/dnscrypt-proxy2/dnscrypt-proxy.toml"
+        DNSCRYPT_DIR="/etc/dnscrypt-proxy2"
+    elif [ -f /etc/init.d/dnscrypt-proxy ]; then
+        DNSCRYPT_INIT="dnscrypt-proxy"
+        DNSCRYPT_CONFIG="/etc/dnscrypt-proxy/dnscrypt-proxy.toml"
+        DNSCRYPT_DIR="/etc/dnscrypt-proxy"
+    else
+        DNSCRYPT_INIT=""
+        echo "   dnscrypt-proxy not installed, using standard DNS"
+    fi
     
-    # Настраиваем dnscrypt-proxy2
-    cat > /etc/dnscrypt-proxy2/dnscrypt-proxy.toml << 'DNSCRYPT'
+    if [ -n "$DNSCRYPT_INIT" ]; then
+        echo "   Configuring $DNSCRYPT_INIT as upstream..."
+        
+        # Останавливаем сервисы
+        /etc/init.d/dnsmasq stop 2>/dev/null
+        /etc/init.d/$DNSCRYPT_INIT stop 2>/dev/null
+        
+        # Создаём конфиг для dnscrypt-proxy
+        mkdir -p "$DNSCRYPT_DIR"
+        cat > "$DNSCRYPT_CONFIG" << DNSCRYPT
 listen_addresses = ['127.0.0.1:5353']
 max_clients = 250
 ipv4_servers = true
 ipv6_servers = false
 require_dns_over_https = true
-require_dns_over_tls = false
 require_nolog = true
 require_nofilter = true
 force_tcp = false
@@ -82,55 +101,28 @@ timeout = 2500
 keepalive = 30
 lb_strategy = 'p2'
 log_level = 2
-log_file = '/var/log/dnscrypt-proxy2.log'
-
-[query_log]
-  file = '/var/log/dnscrypt-proxy2-query.log'
-  format = 'tsv'
-
-[local_doh]
-  listen_addresses = []
-  path = "/dns-query"
-  certificate_file = ""
-  private_key_file = ""
-
-[static]
-  [static.'google']
-  stamp = 'sdns://AgUAAAAAAAAAACDySAtwhQVUlSgS8ZWkEdXbE0MneHNS9VHimNnN_XyFGWYuZG5zLmdvb2dsZS5jb20'
-
-[upstream]
-  upstream_addresses = []
-
-[sources]
-  [sources.'public-resolvers']
-  urls = ['https://raw.githubusercontent.com/DNSCrypt/dnscrypt-resolvers/master/v3/public-resolvers.md']
-  cache_file = '/tmp/public-resolvers.md'
-  minisign_key = 'RWQf6LRCGA9i53mlYecO4IzT51TGPpvWucNSCh1CBM0QTaLn73Y7GFO3'
-  refresh_delay = 72
-
-  [sources.'relays']
-  urls = ['https://raw.githubusercontent.com/DNSCrypt/dnscrypt-resolvers/master/v3/relays.md']
-  cache_file = '/tmp/relays.md'
-  minisign_key = 'RWQf6LRCGA9i53mlYecO4IzT51TGPpvWucNSCh1CBM0QTaLn73Y7GFO3'
-  refresh_delay = 72
 DNSCRYPT
-    
-    # Создаём конфиг для выбора серверов
-    mkdir -p /etc/dnscrypt-proxy2
-    cat > /etc/dnscrypt-proxy2/server_names.txt << 'SERVERS'
-cloudflare
-google
-quad9-dnscrypt-ip4-nofilter-pri
-SERVERS
-    
-    # ---------------- настройка dnsmasq ----------------
-    echo "   Configuring dnsmasq with dnscrypt-proxy2 upstream..."
-    
-    # Настраиваем dnsmasq использовать dnscrypt-proxy2
-    uci set dhcp.@dnsmasq[0].noresolv='1'
-    uci set dhcp.@dnsmasq[0].localuse='1'
-    uci set dhcp.@dnsmasq[0].server='127.0.0.1#5353'
-    uci commit dhcp
+        
+        # Создаём файл с серверами
+        echo "cloudflare" > "$DNSCRYPT_DIR/server_names.txt"
+        
+        # Настраиваем dnsmasq использовать dnscrypt-proxy
+        uci set dhcp.@dnsmasq[0].noresolv='1'
+        uci set dhcp.@dnsmasq[0].localuse='1'
+        uci set dhcp.@dnsmasq[0].server='127.0.0.1#5353'
+        uci commit dhcp
+        
+        echo "✅ $DNSCRYPT_INIT configured on port 5353"
+    else
+        # Используем стандартные DNS-серверы
+        echo "   Using standard DNS servers (Cloudflare, Google)..."
+        uci set dhcp.@dnsmasq[0].noresolv='1'
+        uci set dhcp.@dnsmasq[0].localuse='1'
+        uci set dhcp.@dnsmasq[0].server='1.1.1.1'
+        uci add_list dhcp.@dnsmasq[0].server='8.8.8.8'
+        uci commit dhcp
+        echo "✅ Standard DNS configured"
+    fi
     
     # ---------------- скачиваем и конвертируем домены ----------------
     echo ""
@@ -267,9 +259,11 @@ HOTPLUG
     echo ""
     echo "Starting services..."
     
-    # Запускаем dnscrypt-proxy2
-    /etc/init.d/dnscrypt-proxy2 start
-    sleep 3
+    # Запускаем dnscrypt-proxy если установлен
+    if [ -n "$DNSCRYPT_INIT" ]; then
+        /etc/init.d/$DNSCRYPT_INIT start
+        sleep 2
+    fi
     
     # Запускаем dnsmasq
     /etc/init.d/dnsmasq start
@@ -287,22 +281,21 @@ HOTPLUG
     echo "=========================================="
     echo ""
     echo "📊 DNS Architecture:"
-    echo "  ┌─────────────────────────────────────────────────────────┐"
-    echo "  │ LAN Clients (192.168.2.0/24)                           │"
-    echo "  │          ↓                                             │"
-    echo "  │ dnsmasq :53 (nftset + forwarding)                      │"
-    echo "  │          ↓                                             │"
-    echo "  │ dnscrypt-proxy2 :5353 (DNS-over-HTTPS/TLS)             │"
-    echo "  │          ↓                                             │"
-    echo "  │ Internet (Encrypted DNS: Cloudflare/Google/Quad9)      │"
-    echo "  └─────────────────────────────────────────────────────────┘"
+    echo "  LAN Clients (192.168.2.0/24)"
+    echo "       ↓"
+    echo "  dnsmasq :53 (nftset + forwarding)"
+    if [ -n "$DNSCRYPT_INIT" ]; then
+        echo "       ↓"
+        echo "  $DNSCRYPT_INIT :5353 (DNS-over-HTTPS)"
+    else
+        echo "       ↓"
+        echo "  Upstream DNS: 1.1.1.1, 8.8.8.8"
+    fi
     echo ""
     echo "📊 Service Status:"
     /etc/init.d/pbr status
     echo ""
     echo "📁 Config files:"
-    echo "  - dnscrypt-proxy2: /etc/dnscrypt-proxy2/dnscrypt-proxy.toml"
-    echo "  - PBR config:      /etc/config/pbr"
     echo "  - Domains config:  /etc/dnsmasq.d/vpn_domains.conf ($DOMAIN_COUNT entries)"
     echo "  - Custom domains:  $CUSTOM_FILE"
     echo ""
@@ -311,18 +304,12 @@ HOTPLUG
     echo "  /etc/vpn/update-pbr-domains.sh"
     echo ""
     echo "📝 Commands:"
-    echo "  Update domains:        /etc/vpn/update-pbr-domains.sh"
-    echo "  Check nftables set:    nft list set inet pbr $PBR_SET"
-    echo "  Check DNS ports:       netstat -tulpn | grep -E ':(53|5353)'"
-    echo "  Test encrypted DNS:    /etc/init.d/dnscrypt-proxy2 status"
-    echo "  View dnscrypt logs:    tail -f /var/log/dnscrypt-proxy2.log"
-    echo ""
-    echo "⚠️  After setup, DNS requests from LAN clients will:"
-    echo "  1. Go to dnsmasq (port 53)"
-    echo "  2. dnsmasq adds resolved IP to nftset for VPN routing"
-    echo "  3. dnsmasq forwards to dnscrypt-proxy2 (encrypted)"
+    echo "  Update domains:     /etc/vpn/update-pbr-domains.sh"
+    echo "  Check nftables set: nft list set inet pbr $PBR_SET"
+    echo "  Check DNS ports:    netstat -tulpn | grep :53"
     echo ""
 }
+
 # ---------------- ФУНКЦИЯ ROUTE ----------------
 route_vpn() {
     echo "Select routing mode:"

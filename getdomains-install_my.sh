@@ -30,10 +30,11 @@ setup_dnscrypt_proxy() {
     # ---------------- Stop any running instance ----------------
     killall dnscrypt-proxy 2>/dev/null
 
-    # ---------------- Create config ----------------
+    # ---------------- Create config with fixed stamps ----------------
     mkdir -p /etc/dnscrypt-proxy
     cat > /etc/dnscrypt-proxy/dnscrypt-proxy.toml << 'EOF'
 listen_addresses = ['127.0.0.1:5353']
+server_names = ['google', 'yandex', 'scaleway-fr']
 max_clients = 250
 ipv4_servers = true
 ipv6_servers = false
@@ -42,12 +43,6 @@ timeout = 10000
 log_level = 2
 log_file = '/var/log/dnscrypt-proxy.log'
 
-# Use fixed servers via server_names
-server_names = ['google', 'yandex', 'scaleway-fr']
-EOF
-
-    # ---------------- Create static_servers.toml with stamps ----------------
-    cat > /etc/dnscrypt-proxy/static_servers.toml << 'EOF'
 [google]
 stamp = "sdns://AQAAAAAAAAAADjE3Mi4xNy4xOS4xOjQ0Mw"
 
@@ -69,13 +64,13 @@ PROG=/usr/sbin/dnscrypt-proxy
 CONFIGFILE=/etc/dnscrypt-proxy/dnscrypt-proxy.toml
 
 start_service() {
-        procd_open_instance
-        procd_set_param command "$PROG" -config "$CONFIGFILE"
-        procd_set_param file "$CONFIGFILE"
-        procd_set_param stdout 1
-        procd_set_param stderr 1
-        procd_set_param respawn 3600 5 5
-        procd_close_instance
+    procd_open_instance
+    procd_set_param command "$PROG" -config "$CONFIGFILE"
+    procd_set_param file "$CONFIGFILE"
+    procd_set_param stdout 1
+    procd_set_param stderr 1
+    procd_set_param respawn 3600 5 5
+    procd_close_instance
 }
 EOF
 
@@ -102,7 +97,7 @@ EOF
     fi
 
     echo "=========================================="
-    echo "✅ dnscrypt-proxy2 configured with fixed stamps!"
+    echo "✅ dnscrypt-proxy2 fully configured with fixed stamps!"
     echo "Test: nslookup -port=5353 google.com 127.0.0.1"
 }
 

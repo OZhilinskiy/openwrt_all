@@ -11,12 +11,12 @@ WG_ENDPOINT_IP=""
 
 setup_dnscrypt_proxy() {
     echo "=========================================="
-    echo "Setting up dnscrypt-proxy2 with server names"
+    echo "Setting up dnscrypt-proxy with server names"
     echo "=========================================="
 
     # ---------------- Install ----------------
     apk update
-    apk add dnscrypt-proxy2
+    apk add dnscrypt-proxy
 
     # ---------------- Stop existing service ----------------
     killall dnscrypt-proxy 2>/dev/null
@@ -24,9 +24,9 @@ setup_dnscrypt_proxy() {
 
     # ---------------- Clean old config ----------------
     rm -f /etc/dnscrypt-proxy/dnscrypt-proxy.toml
-
-    # ---------------- Create clean config with server_names only ----------------
     mkdir -p /etc/dnscrypt-proxy
+
+    # ---------------- Create new config ----------------
     cat > /etc/dnscrypt-proxy/dnscrypt-proxy.toml << 'EOF'
 listen_addresses = ['127.0.0.1:5353']
 max_clients = 250
@@ -37,39 +37,39 @@ timeout = 2500
 log_level = 2
 log_file = '/var/log/dnscrypt-proxy.log'
 
-# Your DNS servers (no static section)
-server_names = ['google', 'scaleway-fr', 'yandex']
+# DNS servers to use (must exist in resolvers list)
+server_names = ['google', 'yandex', 'scaleway-fr', 'cloudflare']
 
 # Sources for resolvers list
 [sources]
-  [sources.'public-resolvers']
-  urls = ['https://raw.githubusercontent.com/DNSCrypt/dnscrypt-resolvers/master/v3/public-resolvers.md']
-  cache_file = '/tmp/public-resolvers.md'
+  [sources.'public-servers']
+  urls = ['https://dnscrypt.info/public-servers/']
+  cache_file = '/tmp/public-servers.md'
   minisign_key = 'RWQf6LRCGA9i53mlYecO4IzT51TGPpvWucNSCh1CBM0QTaLn73Y7GFO3'
   refresh_delay = 72
 EOF
 
     # ---------------- Start dnscrypt-proxy ----------------
-    /etc/init.d/dnscrypt-proxy start
+    /etc/init.d/dnscrypt-proxy restart
     echo "Waiting for dnscrypt-proxy to download resolvers list..."
-    
+
     # Wait for resolvers list to download (max 30 seconds)
     for i in $(seq 1 30); do
-        if [ -f /tmp/public-resolvers.md ]; then
+        if [ -f /tmp/public-servers.md ]; then
             echo "✅ Resolvers list downloaded"
             break
         fi
         sleep 1
     done
-    
+
     sleep 3
 
     # ---------------- Check if running ----------------
-    if netstat -tulpn | grep -q 5353; then
-        echo "✅ dnscrypt-proxy2 is running on port 5353"
-        echo "   Servers: google, cloudflare, scaleway-fr, yandex"
+    if ss -tulpn | grep -q 5353; then
+        echo "✅ dnscrypt-proxy is running on port 5353"
+        echo "   Servers: google, yandex, scaleway-fr, cloudflare"
     else
-        echo "⚠️ dnscrypt-proxy2 failed to start"
+        echo "⚠️ dnscrypt-proxy failed to start"
         echo "Checking logs..."
         tail -30 /var/log/dnscrypt-proxy.log 2>/dev/null
         return 1
@@ -83,31 +83,12 @@ EOF
 
     /etc/init.d/dnsmasq restart
 
-    # ---------------- Create init script for autostart ----------------
-    cat > /etc/init.d/dnscrypt-proxy << 'EOF'
-#!/bin/sh /etc/rc.common
-
-START=95
-STOP=10
-
-start() {
-    /usr/sbin/dnscrypt-proxy -config /etc/dnscrypt-proxy/dnscrypt-proxy.toml &
-    sleep 2
-}
-
-stop() {
-    killall dnscrypt-proxy 2>/dev/null
-}
-EOF
-    chmod +x /etc/init.d/dnscrypt-proxy
-    /etc/init.d/dnscrypt-proxy enable
-
     echo ""
     echo "=========================================="
-    echo "✅ dnscrypt-proxy2 configured!"
+    echo "✅ dnscrypt-proxy configured!"
     echo "=========================================="
-    echo "📊 Servers: google, cloudflare, scaleway-fr, yandex"
-    echo "📊 Check: netstat -tulpn | grep 5353"
+    echo "📊 Servers: google, yandex, scaleway-fr, cloudflare"
+    echo "📊 Check: ss -tulpn | grep 5353"
     echo "📊 Test: nslookup -port=5353 google.com 127.0.0.1"
 }
 

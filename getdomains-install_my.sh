@@ -46,12 +46,12 @@ log_file = '/var/log/dnscrypt-proxy.log'
 server_names = ['google', 'yandex', 'scaleway-fr']
 
 # Sources for resolvers list
-[sources]
-  [sources.'public-servers']
-  urls = ['https://dnscrypt.info/public-servers/']
-  cache_file = '/tmp/public-servers.md'
-  minisign_key = 'RWQf6LRCGA9i53mlYecO4IzT51TGPpvWucNSCh1CBM0QTaLn73Y7GFO3'
-  refresh_delay = 72
+#[sources]
+#  [sources.'public-servers']
+#  urls = ['https://dnscrypt.info/public-servers/']
+#  cache_file = '/tmp/public-servers.md'
+#  minisign_key = 'RWQf6LRCGA9i53mlYecO4IzT51TGPpvWucNSCh1CBM0QTaLn73Y7GFO3'
+#  refresh_delay = 72
 EOF
 
     # ---------------- Start dnscrypt-proxy ----------------

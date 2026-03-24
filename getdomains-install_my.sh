@@ -9,6 +9,7 @@ WG_PUBLIC_KEY=""
 WG_PRESHARED_KEY=""
 WG_ENDPOINT_IP=""
 
+
 setup_dnscrypt_proxy() {
     echo "=========================================="
     echo "Setting up dnscrypt-proxy with server names"

@@ -11,40 +11,48 @@ WG_ENDPOINT_IP=""
 
 setup_split_vpn_domains() {
     DOMAINS_URL="https://raw.githubusercontent.com/itdoginfo/allow-domains/main/Russia/inside-dnsmasq-nfset.lst"
+    CUSTOM_FILE="/etc/vpn/domains.lst"
+    CONF="/tmp/dnsmasq.d/vpn_domains.conf"
+
     echo "Using NFT domain list: $DOMAINS_URL"
+    echo "Using custom file: $CUSTOM_FILE"
 
     # ---------------- пакеты ----------------
     apk add curl dnsmasq-full nftables 2>/dev/null
 
     # ---------------- nftables ----------------
     nft list table inet fw4 >/dev/null 2>&1 || nft add table inet fw4
+
     nft list set inet fw4 vpn_domains >/dev/null 2>&1 || \
         nft add set inet fw4 vpn_domains '{ type ipv4_addr; flags dynamic; }'
 
     nft list chain inet fw4 mangle_prerouting >/dev/null 2>&1 || \
         nft add chain inet fw4 mangle_prerouting '{ type filter hook prerouting priority mangle; }'
 
-    # ---------------- NFT rule – помечаем пакеты ----------------
-    nft delete rule inet fw4 mangle_prerouting handle 0 2>/dev/null || true
+    # 🔥 чистим chain (важно)
+    nft flush chain inet fw4 mangle_prerouting
+
+    # правило маркировки
     nft add rule inet fw4 mangle_prerouting ip daddr @vpn_domains meta mark set 0x1
 
-    # ---------------- Таблица маршрутов ----------------
+    # ---------------- маршрутизация ----------------
     grep -q '^200 vpn' /etc/iproute2/rt_tables 2>/dev/null || echo "200 vpn" >> /etc/iproute2/rt_tables
     ip rule add fwmark 1 table vpn 2>/dev/null || true
-
-    # ---------------- Маршрут через WG ----------------
     ip route add table vpn default dev wg0 2>/dev/null || true
 
     # ---------------- dnsmasq ----------------
     mkdir -p /tmp/dnsmasq.d
-    curl -s "$DOMAINS_URL" > /tmp/dnsmasq.d/vpn_domains.conf
+    > "$CONF"
 
-    # ---------------- кастомные домены ----------------
-    if uci show dhcp | grep -q "config ipset"; then
-        uci show dhcp | grep "config ipset" | while read -r line; do
-            DOMAIN=$(echo "$line" | sed -n "s/.*list domain '\([^']*\)'.*/\1/p")
-            [ -n "$DOMAIN" ] && echo "nftset=/$DOMAIN/inet#fw4#vpn_domains" >> /tmp/dnsmasq.d/vpn_domains.conf
-        done
+    echo "Downloading base list..."
+    curl -s "$DOMAINS_URL" > "$CONF"
+
+    echo "Adding custom domains..."
+    if [ -f "$CUSTOM_FILE" ]; then
+        while read -r DOMAIN; do
+            [ -z "$DOMAIN" ] && continue
+            echo "nftset=/$DOMAIN/inet#fw4#vpn_domains" >> "$CONF"
+        done < "$CUSTOM_FILE"
     fi
 
     /etc/init.d/dnsmasq restart
@@ -65,30 +73,37 @@ EOF
 START=99
 start() {
     echo "Updating VPN domain list..."
+
     DOMAINS_URL="$DOMAINS_URL"
+    CUSTOM_FILE="$CUSTOM_FILE"
+    CONF="/tmp/dnsmasq.d/vpn_domains.conf"
 
-    # Обновляем конфиг dnsmasq
-    curl -s "\$DOMAINS_URL" > /tmp/dnsmasq.d/vpn_domains.conf
+    mkdir -p /tmp/dnsmasq.d
+    > "\$CONF"
 
-    # Кастомные домены
-    if uci show dhcp | grep -q "config ipset"; then
-        uci show dhcp | grep "config ipset" | while read -r line; do
-            DOMAIN=\$(echo "\$line" | sed -n "s/.*list domain '\([^']*\)'.*/\1/p")
-            [ -n "\$DOMAIN" ] && echo "nftset=/\$DOMAIN/inet#fw4#vpn_domains" >> /tmp/dnsmasq.d/vpn_domains.conf
-        done
+    curl -s "\$DOMAINS_URL" > "\$CONF"
+
+    if [ -f "\$CUSTOM_FILE" ]; then
+        while read -r DOMAIN; do
+            [ -z "\$DOMAIN" ] && continue
+            echo "nftset=/\$DOMAIN/inet#fw4#vpn_domains" >> "\$CONF"
+        done < "\$CUSTOM_FILE"
     fi
 
-    # dnsmasq сам обновляет NFT set
     /etc/init.d/dnsmasq restart
 }
 EOF
 
     chmod +x /etc/init.d/update-vpn-domains
     /etc/init.d/update-vpn-domains enable
-    (crontab -l 2>/dev/null | grep -v update-vpn-domains; echo "0 */6 * * * /etc/init.d/update-vpn-domains start") | crontab -
+
+    (crontab -l 2>/dev/null | grep -v update-vpn-domains; \
+    echo "0 */6 * * * /etc/init.d/update-vpn-domains start") | crontab -
+
     /etc/init.d/cron restart
 
     echo "✅ Split-tunnel configured and auto-update enabled!"
+    echo "👉 Custom domains: $CUSTOM_FILE"
 }
 
 # ---------------- ФУНКЦИЯ ROUTE ----------------

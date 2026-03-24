@@ -2,7 +2,7 @@
 
 setup_default_wan_vpn_domains() {
     local VPN_IFACE="wg0"
-    local WAN_IFACE="eth0"  # или ваш WAN интерфейс
+    local WAN_IFACE="wan"  # или ваш WAN интерфейс
     local VPN_TABLE="vpn"
     local VPN_MARK="0x10000"
     local NFT_SET="vpn_domains"

@@ -9,120 +9,88 @@ WG_PUBLIC_KEY=""
 WG_PRESHARED_KEY=""
 WG_ENDPOINT_IP=""
 
-setup_split_vpn_domains() {
-    DOMAINS_URL="https://raw.githubusercontent.com/itdoginfo/allow-domains/main/Russia/inside-dnsmasq-nfset.lst"
+setup_vpr_domains() {
+    BASE_URL="https://raw.githubusercontent.com/itdoginfo/allow-domains/main/Russia/inside-dnsmasq-nfset.lst"
     CUSTOM_FILE="/etc/vpn/domains.lst"
-    CONF="/tmp/dnsmasq.d/vpn_domains.conf"
+    VPR_FILE="/etc/vpn/vpr_domains.lst"
+    VPR_CONFIG="/etc/config/vpn-policy-routing"
 
-    echo "Using NFT domain list: $DOMAINS_URL"
-    echo "Using custom file: $CUSTOM_FILE"
+    echo "✅ Setting up VPN Policy Routing with domain split-tunnel"
+    echo "Base list: $BASE_URL"
+    echo "Custom file: $CUSTOM_FILE"
+    echo "VPR domain file: $VPR_FILE"
 
     # ---------------- пакеты ----------------
-    apk add curl dnsmasq-full nftables 2>/dev/null
+    echo "Installing curl vpn-policy-routing luci-app-vpn-policy-routing"
+    apk add curl vpn-policy-routing luci-app-vpn-policy-routing 2>/dev/null
 
-    # ---------------- nftables ----------------
-    nft list table inet fw4 >/dev/null 2>&1 || nft add table inet fw4
-    nft list set inet fw4 vpn_domains >/dev/null 2>&1 || \
-        nft add set inet fw4 vpn_domains '{ type ipv4_addr; flags dynamic; }'
-
-    nft list chain inet fw4 mangle_prerouting >/dev/null 2>&1 || \
-        nft add chain inet fw4 mangle_prerouting '{ type filter hook prerouting priority mangle; }'
-    nft list chain inet fw4 mangle_output >/dev/null 2>&1 || \
-        nft add chain inet fw4 mangle_output '{ type filter hook output priority mangle; }'
-
-    # 🔥 чистим chain
-    nft flush chain inet fw4 mangle_prerouting
-    nft flush chain inet fw4 mangle_output
-
-    # правило маркировки + лог для отладки
-    nft add rule inet fw4 mangle_prerouting ip daddr @vpn_domains meta mark set 0x1
-    nft add rule inet fw4 mangle_prerouting ip daddr @vpn_domains log prefix "VPN MARK PREROUTING: "
-    nft add rule inet fw4 mangle_output ip daddr @vpn_domains meta mark set 0x1
-    nft add rule inet fw4 mangle_output ip daddr @vpn_domains log prefix "VPN MARK OUTPUT: "
-
-    # ---------------- маршрутизация ----------------
-    grep -q '^200 vpn' /etc/iproute2/rt_tables 2>/dev/null || echo "200 vpn" >> /etc/iproute2/rt_tables
-    ip rule add fwmark 1 table vpn 2>/dev/null || true
-    ip route add table vpn default dev wg0 2>/dev/null || true
-
-    # ---------------- dnsmasq ----------------
-    mkdir -p /tmp/dnsmasq.d /etc/vpn
+    # ---------------- директории ----------------
+    mkdir -p /etc/vpn
     touch "$CUSTOM_FILE"
+    touch "$VPR_FILE"
 
-    > "$CONF"
-    echo "Downloading base domain list..."
-    curl -s "$DOMAINS_URL" > "$CONF"
+    # ---------------- обновляем список доменов ----------------
+    echo "Downloading base domains..."
+    curl -s "$BASE_URL" > "$VPR_FILE"
 
-    echo "Adding custom domains..."
     if [ -f "$CUSTOM_FILE" ]; then
-        while read -r DOMAIN; do
-            [ -z "$DOMAIN" ] && continue
-            echo "$DOMAIN" >> "$CONF"
-        done < "$CUSTOM_FILE"
+        echo "Adding custom domains..."
+        cat "$CUSTOM_FILE" >> "$VPR_FILE"
     fi
 
-    # ---------------- dnsmasq ipset ----------------
-    echo "Configuring dnsmasq to populate nftables set..."
-    > /etc/dnsmasq.d/vpn_domains_ipset.conf
-    while read -r DOMAIN; do
-        [ -z "$DOMAIN" ] && continue
-        echo "ipset=/$DOMAIN/inet#fw4#vpn_domains" >> /etc/dnsmasq.d/vpn_domains_ipset.conf
-    done < "$CONF"
+    # ---------------- конфиг vpn-policy-routing ----------------
+    uci batch <<EOF
+delete vpn-policy-routing
+set vpn-policy-routing.@config[0]=config
+set vpn-policy-routing.@config[0].enabled='1'
+set vpn-policy-routing.@config[0].verbose='1'
+set vpn-policy-routing.@config[0].strict_enforcement='0'
+set vpn-policy-routing.@config[0].dns='1'
+EOF
 
-    /etc/init.d/dnsmasq restart
+    # ---------------- добавляем политику ----------------
+    uci batch <<EOF
+delete vpn-policy-routing.@policy[0]
+set vpn-policy-routing.@policy[0]=policy
+set vpn-policy-routing.@policy[0].name='VPN Domains'
+set vpn-policy-routing.@policy[0].interface='wg0'
+set vpn-policy-routing.@policy[0].dest_ip='0.0.0.0/0'
+set vpn-policy-routing.@policy[0].proto='all'
+set vpn-policy-routing.@policy[0].domains_file='$VPR_FILE'
+EOF
 
-    # ---------------- hotplug ----------------
-    cat << 'EOF' > /etc/hotplug.d/iface/30-vpnroute
+    uci commit vpn-policy-routing
+
+    # ---------------- перезапуск ----------------
+    /etc/init.d/vpn-policy-routing restart
+    /etc/init.d/vpn-policy-routing enable
+
+    # ---------------- cron для обновления ----------------
+    (crontab -l 2>/dev/null | grep -v update-vpr-domains; \
+    echo "0 */6 * * * /etc/vpn/update-vpr-domains.sh") | crontab -
+
+    # ---------------- скрипт обновления ----------------
+    cat << 'EOF' > /etc/vpn/update-vpr-domains.sh
 #!/bin/sh
-[ "$ACTION" = "ifup" ] || exit 0
-if [ "$INTERFACE" = "wg0" ]; then
-    ip route add table vpn default dev wg0 2>/dev/null || true
+BASE_URL="https://raw.githubusercontent.com/itdoginfo/allow-domains/main/Russia/inside-dnsmasq-nfset.lst"
+CUSTOM_FILE="/etc/vpn/domains.lst"
+VPR_FILE="/etc/vpn/vpr_domains.lst"
+
+mkdir -p /etc/vpn
+curl -s "$BASE_URL" > "$VPR_FILE"
+
+if [ -f "$CUSTOM_FILE" ]; then
+    cat "$CUSTOM_FILE" >> "$VPR_FILE"
 fi
+
+/etc/init.d/vpn-policy-routing restart
 EOF
-    chmod +x /etc/hotplug.d/iface/30-vpnroute
+    chmod +x /etc/vpn/update-vpr-domains.sh
 
-    # ---------------- автообновление ----------------
-    cat << EOF > /etc/init.d/update-vpn-domains
-#!/bin/sh /etc/rc.common
-START=99
-start() {
-    echo "Updating VPN domain list..."
-    DOMAINS_URL="$DOMAINS_URL"
-    CUSTOM_FILE="$CUSTOM_FILE"
-    CONF="/tmp/dnsmasq.d/vpn_domains.conf"
-
-    mkdir -p /tmp/dnsmasq.d
-    > "\$CONF"
-    curl -s "\$DOMAINS_URL" > "\$CONF"
-
-    if [ -f "\$CUSTOM_FILE" ]; then
-        while read -r DOMAIN; do
-            [ -z "\$DOMAIN" ] && continue
-            echo "\$DOMAIN" >> "\$CONF"
-        done < "\$CUSTOM_FILE"
-    fi
-
-    # dnsmasq автоматически обновляет NFT set через ipset
-    > /etc/dnsmasq.d/vpn_domains_ipset.conf
-    while read -r DOMAIN; do
-        [ -z "\$DOMAIN" ] && continue
-        echo "ipset=/\$DOMAIN/inet#fw4#vpn_domains" >> /etc/dnsmasq.d/vpn_domains_ipset.conf
-    done < "\$CONF"
-
-    /etc/init.d/dnsmasq restart
-}
-EOF
-
-    chmod +x /etc/init.d/update-vpn-domains
-    /etc/init.d/update-vpn-domains enable
-    (crontab -l 2>/dev/null | grep -v update-vpn-domains; \
-    echo "0 */6 * * * /etc/init.d/update-vpn-domains start") | crontab -
-    /etc/init.d/cron restart
-
-    echo "✅ Split-tunnel with automatic DNS->IP resolved domains configured!"
+    echo "✅ Setup complete!"
     echo "👉 Add custom domains in $CUSTOM_FILE"
-    echo "👉 After adding run: /etc/init.d/update-vpn-domains start"
-    echo "👉 Check logs: logread | grep 'VPN MARK'"
+    echo "👉 Manual update: /etc/vpn/update-vpr-domains.sh"
+    echo "👉 Cron auto-update every 6 hours"
 }
 
 # ---------------- ФУНКЦИЯ ROUTE ----------------

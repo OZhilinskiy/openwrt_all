@@ -1,7 +1,5 @@
 #!/bin/sh
 
-#!/bin/sh
-
 setup_default_wan_vpn_domains() {
     local VPN_IFACE="wg0"
     local WAN_IFACE="wan"

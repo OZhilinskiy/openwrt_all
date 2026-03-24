@@ -9,20 +9,18 @@ WG_PUBLIC_KEY=""
 WG_PRESHARED_KEY=""
 WG_ENDPOINT_IP=""
 
-setup_split_vpn_domains() {
+setup_vpr_domains() {
     BASE_URL="https://raw.githubusercontent.com/itdoginfo/allow-domains/main/Russia/inside-dnsmasq-nfset.lst"
     CUSTOM_FILE="/etc/vpn/domains.lst"
     VPR_FILE="/etc/vpn/vpr_domains.lst"
-    VPR_CONFIG="/etc/config/vpn-policy-routing"
 
-    echo "✅ Setting up VPN Policy Routing with domain split-tunnel"
+    echo "✅ Setting up VPN Policy Routing"
     echo "Base list: $BASE_URL"
     echo "Custom file: $CUSTOM_FILE"
     echo "VPR domain file: $VPR_FILE"
 
     # ---------------- пакеты ----------------
-    echo "Installing curl vpn-policy-routing luci-app-vpn-policy-routing"
-    apk add curl vpn-policy-routing luci-app-vpn-policy-routing 2>/dev/null
+    apk add curl vpn-policy-routing 2>/dev/null
 
     # ---------------- директории ----------------
     mkdir -p /etc/vpn
@@ -39,35 +37,28 @@ setup_split_vpn_domains() {
     fi
 
     # ---------------- конфиг vpn-policy-routing ----------------
-    uci batch <<EOF
-delete vpn-policy-routing
-set vpn-policy-routing.@config[0]=config
-set vpn-policy-routing.@config[0].enabled='1'
-set vpn-policy-routing.@config[0].verbose='1'
-set vpn-policy-routing.@config[0].strict_enforcement='0'
-set vpn-policy-routing.@config[0].dns='1'
-EOF
+    if ! uci show vpn-policy-routing >/dev/null 2>&1; then
+        echo "Creating base config..."
+        uci set vpn-policy-routing.@config[0]=config
+        uci set vpn-policy-routing.@config[0].enabled='1'
+        uci set vpn-policy-routing.@config[0].verbose='1'
+        uci set vpn-policy-routing.@config[0].strict_enforcement='0'
+        uci set vpn-policy-routing.@config[0].dns='1'
+        uci commit vpn-policy-routing
+    fi
 
     # ---------------- добавляем политику ----------------
-    uci batch <<EOF
-delete vpn-policy-routing.@policy[0]
-set vpn-policy-routing.@policy[0]=policy
-set vpn-policy-routing.@policy[0].name='VPN Domains'
-set vpn-policy-routing.@policy[0].interface='wg0'
-set vpn-policy-routing.@policy[0].dest_ip='0.0.0.0/0'
-set vpn-policy-routing.@policy[0].proto='all'
-set vpn-policy-routing.@policy[0].domains_file='$VPR_FILE'
-EOF
-
+    uci add vpn-policy-routing policy
+    POLICY_INDEX=$(uci show vpn-policy-routing | grep "=policy" | tail -n1 | cut -d '[' -f2 | cut -d ']' -f1)
+    uci set vpn-policy-routing.@policy[$POLICY_INDEX].name='VPN Domains'
+    uci set vpn-policy-routing.@policy[$POLICY_INDEX].interface='wg0'
+    uci set vpn-policy-routing.@policy[$POLICY_INDEX].proto='all'
+    uci set vpn-policy-routing.@policy[$POLICY_INDEX].domains_file="$VPR_FILE"
     uci commit vpn-policy-routing
 
     # ---------------- перезапуск ----------------
     /etc/init.d/vpn-policy-routing restart
     /etc/init.d/vpn-policy-routing enable
-
-    # ---------------- cron для обновления ----------------
-    (crontab -l 2>/dev/null | grep -v update-vpr-domains; \
-    echo "0 */6 * * * /etc/vpn/update-vpr-domains.sh") | crontab -
 
     # ---------------- скрипт обновления ----------------
     cat << 'EOF' > /etc/vpn/update-vpr-domains.sh
@@ -86,6 +77,10 @@ fi
 /etc/init.d/vpn-policy-routing restart
 EOF
     chmod +x /etc/vpn/update-vpr-domains.sh
+
+    # ---------------- cron ----------------
+    (crontab -l 2>/dev/null | grep -v update-vpr-domains; \
+    echo "0 */6 * * * /etc/vpn/update-vpr-domains.sh") | crontab -
 
     echo "✅ Setup complete!"
     echo "👉 Add custom domains in $CUSTOM_FILE"

@@ -16,7 +16,7 @@ setup_dnscrypt_proxy() {
 
     # ---------------- Install ----------------
     apk update
-    apk add dnscrypt-proxy2
+    apk add dnscrypt-proxy
 
     # ---------------- Stop existing service ----------------
     killall dnscrypt-proxy 2>/dev/null
@@ -38,7 +38,7 @@ log_level = 2
 log_file = '/var/log/dnscrypt-proxy.log'
 
 # DNS servers to use (must exist in resolvers list)
-server_names = ['google', 'yandex', 'scaleway-fr', 'cloudflare']
+server_names = ['google', 'yandex', 'scaleway-fr']
 
 # Sources for resolvers list
 [sources]
@@ -67,7 +67,7 @@ EOF
     # ---------------- Check if running ----------------
     if ss -tulpn | grep -q 5353; then
         echo "✅ dnscrypt-proxy is running on port 5353"
-        echo "   Servers: google, yandex, scaleway-fr, cloudflare"
+        echo "   Servers: google, yandex, scaleway-fr"
     else
         echo "⚠️ dnscrypt-proxy failed to start"
         echo "Checking logs..."
@@ -87,7 +87,7 @@ EOF
     echo "=========================================="
     echo "✅ dnscrypt-proxy configured!"
     echo "=========================================="
-    echo "📊 Servers: google, yandex, scaleway-fr, cloudflare"
+    echo "📊 Servers: google, yandex, scaleway-fr"
     echo "📊 Check: ss -tulpn | grep 5353"
     echo "📊 Test: nslookup -port=5353 google.com 127.0.0.1"
 }

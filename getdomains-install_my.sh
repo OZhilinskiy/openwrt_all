@@ -29,59 +29,63 @@ setup_dnscrypt_proxy() {
 
     # ---------------- Stop running instance ----------------
     killall dnscrypt-proxy 2>/dev/null
+    /etc/init.d/dnscrypt-proxy stop 2>/dev/null
 
     # ---------------- Create directories ----------------
     mkdir -p /etc/dnscrypt-proxy
 
-    # ---------------- Create static_servers.toml ----------------
-    cat > /etc/dnscrypt-proxy/static_servers.toml << 'EOF'
-[google]
-stamp = "sdns://AQAAAAAAAAAADjE3Mi4xNy4xOS4xOjQ0Mw"
-
-[yandex]
-stamp = "sdns://AQAAAAAAAAAAADk3LjEyMC42Mi44OjQ0Mw"
-
-[scaleway-fr]
-stamp = "sdns://AgcAAAAAAAAADjE0Ni45Mi44Ni45OjQ1Mw"
-EOF
-
-    # ---------------- Create main config dnscrypt-proxy.toml ----------------
+    # ---------------- Create main config with static servers ----------------
     cat > /etc/dnscrypt-proxy/dnscrypt-proxy.toml << 'EOF'
 listen_addresses = ['127.0.0.1:5353']
-server_names = ['google', 'yandex', 'scaleway-fr']
 max_clients = 250
 ipv4_servers = true
 ipv6_servers = false
 force_tcp = false
-timeout = 10000
+timeout = 5000
 log_level = 2
 log_file = '/var/log/dnscrypt-proxy.log'
+
+# Static servers with correct stamps
+[static]
+  [static.'google']
+  stamp = 'sdns://AgUAAAAAAAAAACDySAtwhQVUlSgS8ZWkEdXbE0MneHNS9VHimNnN_XyFGWYuZG5zLmdvb2dsZS5jb20'
+  [static.'cloudflare']
+  stamp = 'sdns://AgcAAAAAAAAAB2Nsb3VkZmxhcmUIL2Rucy1xdWVyeQ9kbnMuY2xvdWRmbGFyZS5jb20'
+  [static.'scaleway-fr']
+  stamp = 'sdns://AgcAAAAAAAAADjIwMi4xLjQuMjU2OjQ0MwwvZG5zLXF1ZXJ5DnNjYWxld2F5LWZyLmZy'
+  [static.'yandex']
+  stamp = 'sdns://AQcAAAAAAAAADnlhbmRleC5ybnMtZG5zLmNvbQ'
 EOF
 
     # ---------------- Create procd init script ----------------
-    cat > /etc/init.d/dnscrypt-proxy2 << 'EOF'
+    cat > /etc/init.d/dnscrypt-proxy << 'EOF'
 #!/bin/sh /etc/rc.common
+
 USE_PROCD=1
-START=18
-STOP=89
+START=95
+STOP=10
 
 PROG=/usr/sbin/dnscrypt-proxy
-CONFIGFILE=/etc/dnscrypt-proxy/dnscrypt-proxy.toml
+CONFIG=/etc/dnscrypt-proxy/dnscrypt-proxy.toml
 
 start_service() {
     procd_open_instance
-    procd_set_param command "$PROG" -config "$CONFIGFILE"
-    procd_set_param file "$CONFIGFILE"
-    procd_set_param stdout 1
-    procd_set_param stderr 1
-    procd_set_param respawn 3600 5 5
+    procd_set_param command "$PROG" -config "$CONFIG"
+    procd_set_param respawn
     procd_close_instance
+}
+
+stop_service() {
+    killall dnscrypt-proxy 2>/dev/null
 }
 EOF
 
-    chmod +x /etc/init.d/dnscrypt-proxy2
-    /etc/init.d/dnscrypt-proxy2 enable
-    /etc/init.d/dnscrypt-proxy2 start
+    chmod +x /etc/init.d/dnscrypt-proxy
+    /etc/init.d/dnscrypt-proxy enable
+
+    # ---------------- Start dnscrypt-proxy ----------------
+    /etc/init.d/dnscrypt-proxy start
+    sleep 3
 
     # ---------------- Configure dnsmasq ----------------
     uci set dhcp.@dnsmasq[0].noresolv='1'
@@ -91,19 +95,21 @@ EOF
     /etc/init.d/dnsmasq restart
 
     # ---------------- Check if running ----------------
-    sleep 2
-    if ss -tulpn | grep -q 5353 || netstat -tulpn | grep -q 5353; then
+    if netstat -tulpn | grep -q 5353; then
         echo "✅ dnscrypt-proxy2 is running on 127.0.0.1:5353"
-        echo "Servers: google, yandex, scaleway-fr"
+        echo "   Servers: google, cloudflare, scaleway-fr, yandex"
     else
         echo "⚠️ dnscrypt-proxy2 failed to start"
         tail -30 /var/log/dnscrypt-proxy.log 2>/dev/null
         return 1
     fi
 
+    echo ""
     echo "=========================================="
-    echo "✅ dnscrypt-proxy2 fully configured with static stamps!"
-    echo "Test: nslookup -port=5353 google.com 127.0.0.1"
+    echo "✅ dnscrypt-proxy2 configured!"
+    echo "=========================================="
+    echo "📊 Check: netstat -tulpn | grep 5353"
+    echo "📊 Test: nslookup -port=5353 google.com 127.0.0.1"
 }
 
 setup_split_vpn_domains() {

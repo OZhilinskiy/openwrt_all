@@ -10,7 +10,7 @@ WG_PRESHARED_KEY=""
 WG_ENDPOINT_IP=""
 
 
-setup_dnscrypt_proxy2() {
+setup_dnscrypt_proxy() {
     echo "=========================================="
     echo "Setting up dnscrypt-proxy2 with fixed stamps"
     echo "=========================================="

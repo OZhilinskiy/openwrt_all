@@ -9,7 +9,7 @@ WG_PUBLIC_KEY=""
 WG_PRESHARED_KEY=""
 WG_ENDPOINT_IP=""
 
-setup_vpr_domains() {
+setup_split_vpn_domains() {
     BASE_URL="https://raw.githubusercontent.com/itdoginfo/allow-domains/main/Russia/inside-dnsmasq-nfset.lst"
     CUSTOM_FILE="/etc/vpn/domains.lst"
     VPR_FILE="/etc/vpn/vpr_domains.lst"

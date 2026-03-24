@@ -25,7 +25,7 @@ setup_split_vpn_domains() {
     echo ""
     
     # ---------------- проверка WireGuard ----------------
-    echo "[1/7] Checking WireGuard interface..."
+    echo "[1/6] Checking WireGuard interface..."
     if ! ip link show "$VPN_IFACE" >/dev/null 2>&1; then
         echo "❌ ERROR: Interface $VPN_IFACE not found!"
         echo "   Please configure WireGuard first."
@@ -41,81 +41,60 @@ setup_split_vpn_domains() {
     
     # ---------------- пакеты ----------------
     echo ""
-    echo "[2/7] Installing packages..."
+    echo "[2/6] Installing packages..."
     apk add curl pbr dnsmasq-full nftables
     echo "✅ Packages installed"
     
     # ---------------- директории ----------------
     echo ""
-    echo "[3/7] Creating directories..."
+    echo "[3/6] Creating directories..."
     mkdir -p /etc/vpn /etc/dnsmasq.d
     touch "$CUSTOM_FILE"
     echo "✅ Directories created"
     
     # ---------------- создаём nftables set ----------------
     echo ""
-    echo "[4/7] Creating nftables set..."
+    echo "[4/6] Creating nftables set..."
     nft add table inet pbr 2>/dev/null || true
     nft add set inet pbr $PBR_SET '{ type ipv4_addr; flags interval; auto-merge; }' 2>/dev/null || true
     echo "✅ nftables set created"
     
-    # ---------------- скачиваем и фильтруем домены ----------------
+    # ---------------- скачиваем и конвертируем домены ----------------
     echo ""
-    echo "[5/7] Downloading and processing domain list..."
+    echo "[5/6] Downloading and converting domain list..."
     TEMP_LIST="/tmp/vpn_domains.txt"
     
     echo "   Downloading from $BASE_URL ..."
     curl -s -o "$TEMP_LIST" "$BASE_URL"
     
     # Проверяем, что скачалось
-    DOWNLOADED_COUNT=$(grep -v '^#' "$TEMP_LIST" | grep -v '^$' | wc -l)
-    echo "   Downloaded $DOWNLOADED_COUNT domains from base URL"
+    DOWNLOADED_COUNT=$(grep -c '^nftset=' "$TEMP_LIST" 2>/dev/null || echo "0")
+    echo "   Downloaded $DOWNLOADED_COUNT entries from base URL"
     
+    # Создаём конфиг dnsmasq: конвертируем fw4 -> pbr
+    echo "   Converting fw4 -> pbr..."
+    sed 's/#inet#fw4#vpn_domains/#inet#pbr#vpn_domains/g' "$TEMP_LIST" > /etc/dnsmasq.d/vpn_domains.conf
+    
+    # Добавляем кастомные домены
     if [ -f "$CUSTOM_FILE" ] && [ -s "$CUSTOM_FILE" ]; then
+        echo "   Adding custom domains from $CUSTOM_FILE..."
         CUSTOM_COUNT=$(grep -v '^#' "$CUSTOM_FILE" | grep -v '^$' | wc -l)
-        echo "   Adding $CUSTOM_COUNT custom domains from $CUSTOM_FILE"
-        cat "$CUSTOM_FILE" >> "$TEMP_LIST"
+        echo "   Adding $CUSTOM_COUNT custom domains"
+        
+        while read -r DOMAIN; do
+            [ -z "$DOMAIN" ] && continue
+            echo "$DOMAIN" | grep -q "^#" && continue
+            DOMAIN=$(echo "$DOMAIN" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+            [ -z "$DOMAIN" ] && continue
+            echo "nftset=/$DOMAIN/4#inet#pbr#$PBR_SET" >> /etc/dnsmasq.d/vpn_domains.conf
+        done < "$CUSTOM_FILE"
     fi
-    
-    # Создаём правильный конфиг dnsmasq
-    echo "   Creating dnsmasq configuration..."
-    > /etc/dnsmasq.d/vpn_domains.conf
-    
-    PROCESSED=0
-    while read -r DOMAIN; do
-        # Пропускаем пустые строки
-        [ -z "$DOMAIN" ] && continue
-        
-        # Пропускаем комментарии
-        echo "$DOMAIN" | grep -q "^#" && continue
-        
-        # Удаляем пробелы и спецсимволы
-        DOMAIN=$(echo "$DOMAIN" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
-        
-        # Пропускаем строки с пробелами (не домены)
-        echo "$DOMAIN" | grep -q "[[:space:]]" && continue
-        
-        # Пропускаем строки с "nftset=" (старый мусор)
-        echo "$DOMAIN" | grep -q "^nftset=" && continue
-        
-        # Пропускаем пустые после очистки
-        [ -z "$DOMAIN" ] && continue
-        
-        # Добавляем в конфиг
-        echo "nftset=/$DOMAIN/4#inet#pbr#$PBR_SET" >> /etc/dnsmasq.d/vpn_domains.conf
-        PROCESSED=$((PROCESSED + 1))
-        
-        # Показываем прогресс каждые 100 доменов
-        if [ $((PROCESSED % 100)) -eq 0 ]; then
-            echo "   Processed $PROCESSED domains..."
-        fi
-    done < "$TEMP_LIST"
     
     # Удаляем дубликаты
     sort -u /etc/dnsmasq.d/vpn_domains.conf -o /etc/dnsmasq.d/vpn_domains.conf
     
     DOMAIN_COUNT=$(grep -c '^nftset=' /etc/dnsmasq.d/vpn_domains.conf)
-    echo "✅ Added $DOMAIN_COUNT unique domains to configuration"
+    echo "✅ Added $DOMAIN_COUNT unique entries to configuration"
     
     # Показываем примеры
     echo ""
@@ -124,7 +103,7 @@ setup_split_vpn_domains() {
     
     # ---------------- настройка PBR ----------------
     echo ""
-    echo "[6/7] Configuring PBR..."
+    echo "[6/6] Configuring PBR and routing..."
     
     cat > /etc/config/pbr << PBRCONF
 config pbr 'config'
@@ -147,12 +126,7 @@ config policy
     option chain 'prerouting'
 PBRCONF
     
-    echo "✅ PBR configured"
-    
-    # ---------------- настройка маршрутизации ----------------
-    echo ""
-    echo "[7/7] Configuring routing..."
-    
+    # Таблица маршрутизации
     if ! grep -q '^200 vpn' /etc/iproute2/rt_tables 2>/dev/null; then
         echo "200 vpn" >> /etc/iproute2/rt_tables
     fi
@@ -160,7 +134,7 @@ PBRCONF
     ip route add table vpn default dev "$VPN_IFACE" 2>/dev/null || true
     ip rule add fwmark 0x10000 table vpn 2>/dev/null || true
     
-    echo "✅ Routing configured"
+    echo "✅ PBR and routing configured"
     
     # ---------------- скрипт обновления ----------------
     cat > /etc/vpn/update-pbr-domains.sh << 'UPDATE'
@@ -174,22 +148,21 @@ echo "Updating VPN domain list..."
 
 curl -s -o "$TEMP_LIST" "$BASE_URL"
 
+# Конвертируем fw4 -> pbr
+sed 's/#inet#fw4#vpn_domains/#inet#pbr#vpn_domains/g' "$TEMP_LIST" > /etc/dnsmasq.d/vpn_domains.conf
+
+# Добавляем кастомные домены
 if [ -f "$CUSTOM_FILE" ]; then
-    cat "$CUSTOM_FILE" >> "$TEMP_LIST"
+    while read -r DOMAIN; do
+        [ -z "$DOMAIN" ] && continue
+        echo "$DOMAIN" | grep -q "^#" && continue
+        DOMAIN=$(echo "$DOMAIN" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+        [ -z "$DOMAIN" ] && continue
+        echo "nftset=/$DOMAIN/4#inet#pbr#$PBR_SET" >> /etc/dnsmasq.d/vpn_domains.conf
+    done < "$CUSTOM_FILE"
 fi
 
-> /etc/dnsmasq.d/vpn_domains.conf
-
-while read -r DOMAIN; do
-    [ -z "$DOMAIN" ] && continue
-    echo "$DOMAIN" | grep -q "^#" && continue
-    DOMAIN=$(echo "$DOMAIN" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
-    echo "$DOMAIN" | grep -q "[[:space:]]" && continue
-    echo "$DOMAIN" | grep -q "^nftset=" && continue
-    [ -z "$DOMAIN" ] && continue
-    echo "nftset=/$DOMAIN/4#inet#pbr#$PBR_SET" >> /etc/dnsmasq.d/vpn_domains.conf
-done < "$TEMP_LIST"
-
+# Удаляем дубликаты
 sort -u /etc/dnsmasq.d/vpn_domains.conf -o /etc/dnsmasq.d/vpn_domains.conf
 
 /etc/init.d/dnsmasq restart
@@ -212,19 +185,6 @@ if [ "\$INTERFACE" = "$VPN_IFACE" ]; then
 fi
 HOTPLUG
     chmod +x /etc/hotplug.d/iface/90-pbr-wg
-    
-    # ---------------- init скрипт ----------------
-    cat > /etc/init.d/update-vpn-domains << 'INIT'
-#!/bin/sh /etc/rc.common
-START=99
-
-start() {
-    /etc/vpn/update-pbr-domains.sh
-    logger -t vpn-domains "Domain list updated"
-}
-INIT
-    chmod +x /etc/init.d/update-vpn-domains
-    /etc/init.d/update-vpn-domains enable
     
     # ---------------- cron ----------------
     (crontab -l 2>/dev/null | grep -v update-pbr-domains; \
@@ -254,8 +214,8 @@ INIT
     echo "  - Custom domains:  $CUSTOM_FILE"
     echo ""
     echo "📋 Domain statistics:"
-    echo "  - Total domains in config: $DOMAIN_COUNT"
-    echo "  - Sample domains:"
+    echo "  - Total entries in config: $DOMAIN_COUNT"
+    echo "  - Sample entries:"
     head -5 /etc/dnsmasq.d/vpn_domains.conf | sed 's/^/    /'
     echo ""
     echo "📌 ADD CUSTOM DOMAINS:"

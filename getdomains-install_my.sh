@@ -22,7 +22,10 @@ setup_dnscrypt_proxy() {
     killall dnscrypt-proxy 2>/dev/null
     /etc/init.d/dnscrypt-proxy stop 2>/dev/null
 
-    # ---------------- Create config with server_names ----------------
+    # ---------------- Clean old config ----------------
+    rm -f /etc/dnscrypt-proxy/dnscrypt-proxy.toml
+
+    # ---------------- Create clean config with server_names only ----------------
     mkdir -p /etc/dnscrypt-proxy
     cat > /etc/dnscrypt-proxy/dnscrypt-proxy.toml << 'EOF'
 listen_addresses = ['127.0.0.1:5353']
@@ -34,7 +37,7 @@ timeout = 2500
 log_level = 2
 log_file = '/var/log/dnscrypt-proxy.log'
 
-# Your DNS servers
+# Your DNS servers (no static section)
 server_names = ['google', 'cloudflare', 'scaleway-fr', 'yandex']
 
 # Sources for resolvers list
@@ -67,7 +70,8 @@ EOF
         echo "   Servers: google, cloudflare, scaleway-fr, yandex"
     else
         echo "⚠️ dnscrypt-proxy2 failed to start"
-        tail -20 /var/log/dnscrypt-proxy.log 2>/dev/null
+        echo "Checking logs..."
+        tail -30 /var/log/dnscrypt-proxy.log 2>/dev/null
         return 1
     fi
 
@@ -79,7 +83,7 @@ EOF
 
     /etc/init.d/dnsmasq restart
 
-    # ---------------- Create init script ----------------
+    # ---------------- Create init script for autostart ----------------
     cat > /etc/init.d/dnscrypt-proxy << 'EOF'
 #!/bin/sh /etc/rc.common
 

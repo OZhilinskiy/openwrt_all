@@ -27,6 +27,9 @@ setup_dnscrypt_proxy() {
     rm -f /etc/dnscrypt-proxy/dnscrypt-proxy.toml
     mkdir -p /etc/dnscrypt-proxy
 
+    # ---------------- Create empty static_servers.toml ----------------
+    echo "" > /etc/dnscrypt-proxy/static_servers.toml
+
     # ---------------- Create new config ----------------
     cat > /etc/dnscrypt-proxy/dnscrypt-proxy.toml << 'EOF'
 listen_addresses = ['127.0.0.1:5353']
@@ -66,7 +69,13 @@ EOF
     sleep 3
 
     # ---------------- Check if running ----------------
-    if ss -tulpn | grep -q 5353; then
+    if command -v ss >/dev/null 2>&1; then
+        CHECK_CMD="ss -tulpn | grep 5353"
+    else
+        CHECK_CMD="netstat -tulpn 2>/dev/null | grep 5353"
+    fi
+
+    if eval $CHECK_CMD >/dev/null 2>&1; then
         echo "✅ dnscrypt-proxy is running on port 5353"
         echo "   Servers: google, yandex, scaleway-fr"
     else

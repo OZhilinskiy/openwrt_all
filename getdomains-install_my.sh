@@ -10,9 +10,9 @@ WG_PRESHARED_KEY=""
 WG_ENDPOINT_IP=""
 
 
-setup_dnscrypt_proxy() {
+setup_dnscrypt_proxy2() {
     echo "=========================================="
-    echo "Setting up dnscrypt-proxy2"
+    echo "Setting up dnscrypt-proxy2 with fixed stamps"
     echo "=========================================="
 
     # ---------------- Remove old dnscrypt-proxy ----------------
@@ -41,12 +41,21 @@ timeout = 10000
 log_level = 2
 log_file = '/var/log/dnscrypt-proxy.log'
 
-# DNS servers
+# Use fixed servers via server_names
 server_names = ['google', 'yandex', 'scaleway-fr']
 EOF
 
-    # ---------------- Create empty static_servers.toml ----------------
-    echo "" > /etc/dnscrypt-proxy/static_servers.toml
+    # ---------------- Create static_servers.toml with stamps ----------------
+    cat > /etc/dnscrypt-proxy/static_servers.toml << 'EOF'
+[google]
+stamp = "sdns://AQAAAAAAAAAADjE3Mi4xNy4xOS4xOjQ0Mw"
+
+[yandex]
+stamp = "sdns://AQAAAAAAAAAAADk3LjEyMC42Mi44OjQ0Mw"
+
+[scaleway-fr]
+stamp = "sdns://AgcAAAAAAAAADjE0Ni45Mi44Ni45OjQ1Mw"
+EOF
 
     # ---------------- Create procd init script ----------------
     cat > /etc/init.d/dnscrypt-proxy2 << 'EOF'
@@ -92,7 +101,7 @@ EOF
     fi
 
     echo "=========================================="
-    echo "✅ dnscrypt-proxy2 configured!"
+    echo "✅ dnscrypt-proxy2 configured with fixed stamps!"
     echo "Test: nslookup -port=5353 google.com 127.0.0.1"
 }
 

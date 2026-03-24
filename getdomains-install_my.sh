@@ -105,7 +105,7 @@ EOF
 
     echo "✅ Split-tunnel configured and auto-update enabled!"
     echo "👉 ADD Custom domains: $CUSTOM_FILE"
-    echo "👉 After ADD Custom domains run /etc/init.d/dnsmasq restart"
+    echo "👉 After ADD Custom domains run /etc/init.d/update-vpn-domains start"
 }
 
 # ---------------- ФУНКЦИЯ ROUTE ----------------

@@ -13,167 +13,173 @@ setup_split_vpn_domains() {
     BASE_URL="https://raw.githubusercontent.com/itdoginfo/allow-domains/main/Russia/inside-dnsmasq-nfset.lst"
     CUSTOM_FILE="/etc/vpn/domains.lst"
     VPN_IFACE="wg0"
-    CONF="/etc/dnsmasq.d/vpn_domains.conf"
+    PBR_SET="vpn_domains"
 
     echo "=========================================="
-    echo "🚀 FINAL PBR + DNSMASQ + DNSCRYPT SETUP"
+    echo "Setting up Split VPN Routing with PBR + dnscrypt-proxy2"
     echo "=========================================="
+    echo "Base list: $BASE_URL"
+    echo "Custom file: $CUSTOM_FILE"
+    echo "VPN interface: $VPN_IFACE"
+    echo ""
 
-    # ---------------- проверка WG ----------------
+    # ---------------- WireGuard ----------------
+    echo "[1/7] Checking WireGuard interface..."
     if ! ip link show "$VPN_IFACE" >/dev/null 2>&1; then
-        echo "❌ Interface $VPN_IFACE not found"
+        echo "❌ ERROR: Interface $VPN_IFACE not found!"
+        echo "   Please configure WireGuard first."
         return 1
     fi
+    echo "✅ Interface $VPN_IFACE exists"
+    ip link set "$VPN_IFACE" up 2>/dev/null
+    echo "✅ Interface $VPN_IFACE is UP"
 
-    # ---------------- пакеты ----------------
+    # ---------------- Packages ----------------
+    echo ""
+    echo "[2/7] Installing packages..."
     apk update
-    apk add curl pbr dnsmasq-full dnscrypt-proxy2
+    apk add curl pbr dnsmasq-full nftables dnscrypt-proxy2
+    echo "✅ Packages installed"
 
-    mkdir -p /etc/vpn /etc/dnsmasq.d
+    # ---------------- Directories ----------------
+    echo ""
+    echo "[3/7] Creating directories..."
+    mkdir -p /etc/vpn /etc/dnsmasq.d /etc/dnscrypt-proxy
     touch "$CUSTOM_FILE"
+    rm -f /etc/dnsmasq.d/vpn_domains_ipset.conf
+    echo "✅ Directories ready, old junk removed"
 
-    # ---------------- dnscrypt ----------------
+    # ---------------- nftables set ----------------
+    echo ""
+    echo "[4/7] Creating nftables set..."
+    nft add table inet fw4 2>/dev/null || true
+    nft add set inet fw4 $PBR_SET '{ type ipv4_addr; flags dynamic; }' 2>/dev/null || true
+    echo "✅ nftables set '$PBR_SET' created"
+
+    # ---------------- dnscrypt-proxy2 ----------------
+    echo ""
+    echo "[5/7] Configuring dnscrypt-proxy2..."
+    killall dnsmasq dnscrypt-proxy 2>/dev/null
+    /etc/init.d/dnscrypt-proxy stop 2>/dev/null
+
     cat > /etc/dnscrypt-proxy/dnscrypt-proxy.toml << 'EOF'
 listen_addresses = ['127.0.0.1:5353']
-server_names = ['cloudflare', 'google']
+max_clients = 250
 ipv4_servers = true
 ipv6_servers = false
-max_clients = 250
+force_tcp = false
+timeout = 2500
+keepalive = 30
+lb_strategy = 'p2'
+log_level = 2
+log_file = '/var/log/dnscrypt-proxy.log'
+server_names = ['cloudflare', 'google', 'quad9-dnscrypt-ip4']
+
+[sources]
+  [sources.public-resolvers]
+  urls = ['https://raw.githubusercontent.com/DNSCrypt/dnscrypt-resolvers/master/v3/public-resolvers.md']
+  cache_file = '/tmp/public-resolvers.md'
+  minisign_key = 'RWQf6LRCGA9i53mlYecO4IzT51TGPpvWucNSCh1CBM0QTaLn73Y7GFO3'
+  refresh_delay = 72
+
+require_dnssec = false
+require_nolog = true
+require_nofilter = true
+fallback_resolver = '8.8.8.8:53'
 EOF
 
-    # dnsmasq → dnscrypt
+    /etc/init.d/dnscrypt-proxy start
+    sleep 3
+    echo "✅ dnscrypt-proxy2 configured"
+
+    # ---------------- dnsmasq upstream ----------------
     uci set dhcp.@dnsmasq[0].noresolv='1'
-    uci del_list dhcp.@dnsmasq[0].server 2>/dev/null
+    uci set dhcp.@dnsmasq[0].localuse='1'
     uci add_list dhcp.@dnsmasq[0].server='127.0.0.1#5353'
     uci commit dhcp
+    /etc/init.d/dnsmasq restart
+    echo "✅ dnsmasq upstream set to dnscrypt-proxy2"
 
-    # ---------------- PBR ----------------
-    cat > /etc/config/pbr << EOF
+    # ---------------- Download + convert domain list ----------------
+    echo ""
+    echo "[6/7] Downloading domain list..."
+    TEMP_LIST="/tmp/vpn_domains.txt"
+    curl -s -o "$TEMP_LIST" "$BASE_URL"
+
+    # dnsmasq config
+    sed 's/#inet#fw4#vpn_domains/#inet#fw4#vpn_domains/g' "$TEMP_LIST" > /etc/dnsmasq.d/vpn_domains.conf
+
+    # add custom domains
+    if [ -f "$CUSTOM_FILE" ] && [ -s "$CUSTOM_FILE" ]; then
+        while read -r DOMAIN; do
+            [ -z "$DOMAIN" ] && continue
+            echo "$DOMAIN" | grep -q "^#" && continue
+            DOMAIN=$(echo "$DOMAIN" | xargs)
+            [ -z "$DOMAIN" ] && continue
+            echo "nftset=/$DOMAIN/4#inet#fw4#$PBR_SET" >> /etc/dnsmasq.d/vpn_domains.conf
+        done < "$CUSTOM_FILE"
+    fi
+
+    sort -u /etc/dnsmasq.d/vpn_domains.conf -o /etc/dnsmasq.d/vpn_domains.conf
+    DOMAIN_COUNT=$(grep -c '^nftset=' /etc/dnsmasq.d/vpn_domains.conf)
+    echo "✅ Domains added: $DOMAIN_COUNT"
+
+    # ---------------- PBR config ----------------
+    echo ""
+    echo "[7/7] Configuring PBR..."
+    cat > /etc/config/pbr << PBRCONF
 config pbr 'config'
     option enabled '1'
     option verbosity '2'
     option resolver_set 'dnsmasq.nftset'
     option strict_enforcement '0'
+    option boot_timeout '30'
     option ipv6_enabled '0'
+    option nft_rule_counter '0'
+    option nft_set_auto_merge '1'
     list supported_interface '$VPN_IFACE'
 
 config policy
     option name 'vpn_domains'
     option interface '$VPN_IFACE'
+    option dest_addr '$PBR_SET.set'
+    option enabled '1'
     option proto 'all'
     option chain 'prerouting'
-    option enabled '1'
-EOF
+PBRCONF
 
+    # routing table
+    grep -q '^200 vpn' /etc/iproute2/rt_tables || echo "200 vpn" >> /etc/iproute2/rt_tables
+    ip route add table vpn default dev "$VPN_IFACE" 2>/dev/null || true
+    ip rule add fwmark 0x10000 table vpn 2>/dev/null || true
+
+    # ---------------- Sync set ----------------
+    cat > /etc/vpn/sync-sets.sh << 'SYNC'
+#!/bin/sh
+SOURCE_SET="inet fw4 vpn_domains"
+TARGET_SET=$(nft list sets inet fw4 2>/dev/null | grep -o 'pbr_wg0_4_dst_ip_cfg[0-9a-f]*' | head -1)
+if [ -n "$TARGET_SET" ] && [ "$SOURCE_SET" != "inet fw4 $TARGET_SET" ]; then
+    echo "Syncing $SOURCE_SET -> $TARGET_SET"
+    nft flush set inet fw4 $TARGET_SET 2>/dev/null
+    nft list set $SOURCE_SET | grep -oE '[0-9]{1,3}(\.[0-9]{1,3}){3}' | while read ip; do
+        nft add element inet fw4 $TARGET_SET { $ip } 2>/dev/null
+    done
+fi
+SYNC
+    chmod +x /etc/vpn/sync-sets.sh
+
+    # ---------------- restart services ----------------
     /etc/init.d/pbr enable
     /etc/init.d/pbr restart
+    /etc/vpn/sync-sets.sh
+    /etc/init.d/cron restart 2>/dev/null || true
 
-    # ---------------- НАХОДИМ PBR SET ----------------
-    echo "🔍 Detecting PBR nft set..."
-
-    sleep 2
-
-    PBR_SET=$(nft list sets inet fw4 2>/dev/null | grep -o 'pbr_wg0_4_dst_ip_[^ ]*' | head -1)
-
-    if [ -z "$PBR_SET" ]; then
-        echo "❌ ERROR: PBR set not found"
-        echo "Check: /etc/init.d/pbr status"
-        return 1
-    fi
-
-    echo "✅ Found PBR set: $PBR_SET"
-
-    # ---------------- домены ----------------
-    TMP="/tmp/domains.txt"
-    curl -s "$BASE_URL" > "$TMP"
-
-    > "$CONF"
-
-    echo "📥 Processing domain list..."
-
-    # базовый список
-    grep '^nftset=' "$TMP" | \
-        sed "s|#inet#fw4#vpn_domains|#inet#fw4#$PBR_SET|g" >> "$CONF"
-
-    # кастом
-    if [ -s "$CUSTOM_FILE" ]; then
-        while read -r d; do
-            [ -z "$d" ] && continue
-            echo "$d" | grep -q "^#" && continue
-            d=$(echo "$d" | xargs)
-            echo "nftset=/$d/4#inet#fw4#$PBR_SET" >> "$CONF"
-        done < "$CUSTOM_FILE"
-    fi
-
-    sort -u "$CONF" -o "$CONF"
-
-    DOMAIN_COUNT=$(grep -c '^nftset=' "$CONF")
-
-    echo "✅ Domains configured: $DOMAIN_COUNT"
-
-    # ---------------- запуск ----------------
-    /etc/init.d/dnscrypt-proxy restart
-    /etc/init.d/dnsmasq restart
-    /etc/init.d/pbr restart
-
-    # ---------------- автообновление ----------------
-    cat > /etc/vpn/update-domains.sh << 'EOF'
-#!/bin/sh
-
-BASE_URL="https://raw.githubusercontent.com/itdoginfo/allow-domains/main/Russia/inside-dnsmasq-nfset.lst"
-CUSTOM_FILE="/etc/vpn/domains.lst"
-CONF="/etc/dnsmasq.d/vpn_domains.conf"
-
-echo "Updating domains..."
-
-# найти актуальный pbr set
-PBR_SET=$(nft list sets inet fw4 2>/dev/null | grep -o 'pbr_wg0_4_dst_ip_[^ ]*' | head -1)
-
-[ -z "$PBR_SET" ] && echo "PBR set not found" && exit 1
-
-TMP="/tmp/domains.txt"
-curl -s "$BASE_URL" > "$TMP"
-
-> "$CONF"
-
-grep '^nftset=' "$TMP" | \
-    sed "s|#inet#fw4#vpn_domains|#inet#fw4#$PBR_SET|g" >> "$CONF"
-
-if [ -f "$CUSTOM_FILE" ]; then
-    while read -r d; do
-        [ -z "$d" ] && continue
-        echo "$d" | grep -q "^#" && continue
-        d=$(echo "$d" | xargs)
-        echo "nftset=/$d/4#inet#fw4#$PBR_SET" >> "$CONF"
-    done < "$CUSTOM_FILE"
-fi
-
-sort -u "$CONF" -o "$CONF"
-
-/etc/init.d/dnsmasq restart
-/etc/init.d/pbr restart
-
-echo "Done: $(grep -c '^nftset=' "$CONF") domains"
-EOF
-
-    chmod +x /etc/vpn/update-domains.sh
-
-    (crontab -l 2>/dev/null | grep -v update-domains; \
-     echo "0 */6 * * * /etc/vpn/update-domains.sh") | crontab -
-
-    # ---------------- финал ----------------
     echo ""
     echo "=========================================="
-    echo "✅ READY"
+    echo "✅ Setup Complete!"
     echo "=========================================="
-    echo ""
-    echo "📌 Add domains:"
-    echo "echo 'telegram.org' >> $CUSTOM_FILE"
-    echo "/etc/vpn/update-domains.sh"
-    echo ""
-    echo "🧪 Test:"
-    echo "nslookup telegram.org"
-    echo "nft list set inet fw4 $PBR_SET"
+    echo "📊 Check dnscrypt-proxy: netstat -tulpn | grep 5353"
+    echo "📊 Check domains set: nft list set inet fw4 $PBR_SET"
 }
 
 # ---------------- ФУНКЦИЯ ROUTE ----------------

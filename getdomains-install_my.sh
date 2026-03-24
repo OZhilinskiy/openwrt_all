@@ -42,7 +42,9 @@ setup_split_vpn_domains() {
 
     # ---------------- dnsmasq ----------------
     mkdir -p /tmp/dnsmasq.d
-    mkdir -p $CUSTOM_FILE
+    mkdir -p /etc/vpn/
+    touch /etc/vpn/domains.lst
+    
     > "$CONF"
 
     echo "Downloading base list..."

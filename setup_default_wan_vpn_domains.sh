@@ -121,6 +121,8 @@ config policy
     option priority '100'
     option nftset '4#inet#fw4#$NFT_SET'
     option proto 'all'
+    option src_addr ''
+    option dest_addr ''
 EOF
     
     echo "✅ PBR configured"
@@ -350,7 +352,7 @@ EOF
         
         echo ""
         echo "  Testing route for first IP:"
-        TEST_IP=$(nft list set inet fw4 $NFT_SET 2>/dev/null | grep -E '([0-9]{1,3}\.){3}[0-9]{1,3}' | head -1 | tr -d ' ,')
+        TEST_IP=$(nft list set inet fw4 $NFT_SET 2>/dev/null | grep -Eo '([0-9]{1,3}\.){3}[0-9]{1,3}' | head -1)
         if [ -n "$TEST_IP" ]; then
             ip route get "$TEST_IP"
         fi

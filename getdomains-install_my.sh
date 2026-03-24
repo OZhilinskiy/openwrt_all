@@ -9,6 +9,7 @@ WG_PUBLIC_KEY=""
 WG_PRESHARED_KEY=""
 WG_ENDPOINT_IP=""
 
+
 setup_split_vpn_domains() {
     BASE_URL="https://raw.githubusercontent.com/itdoginfo/allow-domains/main/Russia/inside-dnsmasq-nfset.lst"
     CUSTOM_FILE="/etc/vpn/domains.lst"
@@ -147,7 +148,7 @@ route_vpn() {
     if [ "$MODE" = "split" ]; then
         echo "Configuring SPLIT tunnel via WG... -"
 
-        setup_split_vpn_domains
+        setup_split_vpn_domains 
     fi
 }
 

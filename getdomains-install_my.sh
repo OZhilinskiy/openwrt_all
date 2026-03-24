@@ -16,54 +16,34 @@ setup_split_vpn_domains() {
     PBR_SET="vpn_domains"
 
     echo "=========================================="
-    echo "Setting up Split VPN Routing with PBR + dnscrypt-proxy2"
+    echo "Setting up Split VPN Routing with PBR + dnscrypt-proxy2 (IPv4 only)"
     echo "=========================================="
-    echo "Base list: $BASE_URL"
-    echo "Custom file: $CUSTOM_FILE"
-    echo "VPN interface: $VPN_IFACE"
-    echo ""
 
     # ---------------- WireGuard ----------------
-    echo "[1/7] Checking WireGuard interface..."
     if ! ip link show "$VPN_IFACE" >/dev/null 2>&1; then
         echo "❌ ERROR: Interface $VPN_IFACE not found!"
-        echo "   Please configure WireGuard first."
         return 1
     fi
-    echo "✅ Interface $VPN_IFACE exists"
     ip link set "$VPN_IFACE" up 2>/dev/null
-    echo "✅ Interface $VPN_IFACE is UP"
 
     # ---------------- Packages ----------------
-    echo ""
-    echo "[2/7] Installing packages..."
     apk update
     apk add curl pbr dnsmasq-full nftables dnscrypt-proxy2
-    echo "✅ Packages installed"
 
     # ---------------- Directories ----------------
-    echo ""
-    echo "[3/7] Creating directories..."
     mkdir -p /etc/vpn /etc/dnsmasq.d /etc/dnscrypt-proxy
     touch "$CUSTOM_FILE"
     rm -f /etc/dnsmasq.d/vpn_domains_ipset.conf
-    echo "✅ Directories ready, old junk removed"
 
     # ---------------- Detect or create PBR set ----------------
-    echo ""
-    echo "[4/7] Detecting PBR nftables set..."
     TARGET_SET=$(nft list sets inet fw4 2>/dev/null | grep -o 'pbr_wg0_4_dst_ip_cfg[0-9a-f]*' | head -1)
     if [ -z "$TARGET_SET" ]; then
-        echo "⚠️ PBR set not found, creating $PBR_SET"
         TARGET_SET="$PBR_SET"
         nft add table inet fw4 2>/dev/null || true
         nft add set inet fw4 $TARGET_SET '{ type ipv4_addr; flags dynamic; }' 2>/dev/null || true
     fi
-    echo "✅ Using nftables set: $TARGET_SET"
 
     # ---------------- dnscrypt-proxy2 ----------------
-    echo ""
-    echo "[5/7] Configuring dnscrypt-proxy2..."
     killall dnsmasq dnscrypt-proxy 2>/dev/null
     /etc/init.d/dnscrypt-proxy stop 2>/dev/null
 
@@ -77,7 +57,6 @@ timeout = 2500
 log_level = 2
 log_file = '/var/log/dnscrypt-proxy.log'
 
-# Static DoH servers
 [static]
   [static.'cloudflare']
   stamp = 'sdns://AgcAAAAAAAAAB2Nsb3VkZmxhcmUKL2Rucy1xdWVyeQ9kbnMuY2xvdWRmbGFyZS5jb20KL2Rucy1xdWVyeQ'
@@ -88,8 +67,7 @@ log_file = '/var/log/dnscrypt-proxy.log'
 EOF
 
     /etc/init.d/dnscrypt-proxy start
-    sleep 3
-    echo "✅ dnscrypt-proxy2 configured"
+    sleep 2
 
     # ---------------- dnsmasq upstream ----------------
     uci set dhcp.@dnsmasq[0].noresolv='1'
@@ -97,17 +75,13 @@ EOF
     uci add_list dhcp.@dnsmasq[0].server='127.0.0.1#5353'
     uci commit dhcp
     /etc/init.d/dnsmasq restart
-    echo "✅ dnsmasq upstream set to dnscrypt-proxy2"
 
     # ---------------- Download + convert domain list ----------------
-    echo ""
-    echo "[6/7] Downloading domain list..."
     TEMP_LIST="/tmp/vpn_domains.txt"
     curl -s -o "$TEMP_LIST" "$BASE_URL"
 
     sed 's/#inet#fw4#vpn_domains/#inet#fw4#'$TARGET_SET'/g' "$TEMP_LIST" > /etc/dnsmasq.d/vpn_domains.conf
 
-    # add custom domains
     if [ -f "$CUSTOM_FILE" ] && [ -s "$CUSTOM_FILE" ]; then
         while read -r DOMAIN; do
             [ -z "$DOMAIN" ] && continue
@@ -119,12 +93,8 @@ EOF
     fi
 
     sort -u /etc/dnsmasq.d/vpn_domains.conf -o /etc/dnsmasq.d/vpn_domains.conf
-    DOMAIN_COUNT=$(grep -c '^nftset=' /etc/dnsmasq.d/vpn_domains.conf)
-    echo "✅ Domains added: $DOMAIN_COUNT"
 
     # ---------------- PBR config ----------------
-    echo ""
-    echo "[7/7] Configuring PBR..."
     cat > /etc/config/pbr << PBRCONF
 config pbr 'config'
     option enabled '1'
@@ -151,14 +121,11 @@ PBRCONF
     ip route add table vpn default dev "$VPN_IFACE" 2>/dev/null || true
     ip rule add fwmark 0x10000 table vpn 2>/dev/null || true
 
-    # ---------------- restart services ----------------
     /etc/init.d/pbr enable
     /etc/init.d/pbr restart
-    /etc/init.d/cron restart 2>/dev/null || true
 
-    echo ""
     echo "=========================================="
-    echo "✅ Setup Complete!"
+    echo "✅ IPv4-only Split VPN Setup Complete!"
     echo "=========================================="
     echo "📊 Check dnscrypt-proxy: netstat -tulpn | grep 5353"
     echo "📊 Check domains set: nft list set inet fw4 $TARGET_SET"

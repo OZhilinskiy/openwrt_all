@@ -21,7 +21,7 @@ setup_split_vpn_domains() {
     echo "VPR domain file: $VPR_FILE"
 
     # ---------------- пакеты ----------------
-    apk add curl vpn-policy-routing 2>/dev/null
+    apk add curl pbr 2>/dev/null
 
     # ---------------- директории ----------------
     mkdir -p /etc/vpn

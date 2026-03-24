@@ -36,10 +36,9 @@ setup_split_vpn_domains() {
 
     # правило маркировки + лог для отладки
     nft add rule inet fw4 mangle_prerouting ip daddr @vpn_domains meta mark set 0x1
-    nft add rule inet fw4 mangle_prerouting ip daddr @vpn_domains meta mark set 0x1 log prefix "VPN MARK PREROUTING: "
-
+    nft add rule inet fw4 mangle_prerouting ip daddr @vpn_domains log prefix "VPN MARK PREROUTING: "
     nft add rule inet fw4 mangle_output ip daddr @vpn_domains meta mark set 0x1
-    nft add rule inet fw4 mangle_output ip daddr @vpn_domains meta mark set 0x1 log prefix "VPN MARK OUTPUT: "
+    nft add rule inet fw4 mangle_output ip daddr @vpn_domains log prefix "VPN MARK OUTPUT: "
 
     # ---------------- маршрутизация ----------------
     grep -q '^200 vpn' /etc/iproute2/rt_tables 2>/dev/null || echo "200 vpn" >> /etc/iproute2/rt_tables
@@ -49,18 +48,26 @@ setup_split_vpn_domains() {
     # ---------------- dnsmasq ----------------
     mkdir -p /tmp/dnsmasq.d /etc/vpn
     touch "$CUSTOM_FILE"
-    > "$CONF"
 
-    echo "Downloading base list..."
+    > "$CONF"
+    echo "Downloading base domain list..."
     curl -s "$DOMAINS_URL" > "$CONF"
 
     echo "Adding custom domains..."
     if [ -f "$CUSTOM_FILE" ]; then
         while read -r DOMAIN; do
             [ -z "$DOMAIN" ] && continue
-            echo "nftset=/$DOMAIN/inet#fw4#vpn_domains" >> "$CONF"
+            echo "$DOMAIN" >> "$CONF"
         done < "$CUSTOM_FILE"
     fi
+
+    # ---------------- dnsmasq ipset ----------------
+    echo "Configuring dnsmasq to populate nftables set..."
+    > /etc/dnsmasq.d/vpn_domains_ipset.conf
+    while read -r DOMAIN; do
+        [ -z "$DOMAIN" ] && continue
+        echo "ipset=/$DOMAIN/inet#fw4#vpn_domains" >> /etc/dnsmasq.d/vpn_domains_ipset.conf
+    done < "$CONF"
 
     /etc/init.d/dnsmasq restart
 
@@ -80,22 +87,27 @@ EOF
 START=99
 start() {
     echo "Updating VPN domain list..."
-
     DOMAINS_URL="$DOMAINS_URL"
     CUSTOM_FILE="$CUSTOM_FILE"
     CONF="/tmp/dnsmasq.d/vpn_domains.conf"
 
     mkdir -p /tmp/dnsmasq.d
     > "\$CONF"
-
     curl -s "\$DOMAINS_URL" > "\$CONF"
 
     if [ -f "\$CUSTOM_FILE" ]; then
         while read -r DOMAIN; do
             [ -z "\$DOMAIN" ] && continue
-            echo "nftset=/\$DOMAIN/inet#fw4#vpn_domains" >> "\$CONF"
+            echo "\$DOMAIN" >> "\$CONF"
         done < "\$CUSTOM_FILE"
     fi
+
+    # dnsmasq автоматически обновляет NFT set через ipset
+    > /etc/dnsmasq.d/vpn_domains_ipset.conf
+    while read -r DOMAIN; do
+        [ -z "\$DOMAIN" ] && continue
+        echo "ipset=/\$DOMAIN/inet#fw4#vpn_domains" >> /etc/dnsmasq.d/vpn_domains_ipset.conf
+    done < "\$CONF"
 
     /etc/init.d/dnsmasq restart
 }
@@ -107,10 +119,10 @@ EOF
     echo "0 */6 * * * /etc/init.d/update-vpn-domains start") | crontab -
     /etc/init.d/cron restart
 
-    echo "✅ Split-tunnel configured and auto-update enabled! RU"
+    echo "✅ Split-tunnel with automatic DNS->IP resolved domains configured!"
     echo "👉 Add custom domains in $CUSTOM_FILE"
     echo "👉 After adding run: /etc/init.d/update-vpn-domains start"
-    echo "👉 For debugging traffic use: logread | grep 'VPN MARK'"
+    echo "👉 Check logs: logread | grep 'VPN MARK'"
 }
 
 # ---------------- ФУНКЦИЯ ROUTE ----------------

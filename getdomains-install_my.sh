@@ -14,51 +14,36 @@ setup_split_vpn_domains() {
     echo "Using NFT domain list: $DOMAINS_URL"
 
     # ---------------- пакеты ----------------
-    apk add curl dnsmasq-full nftables bind-tools 2>/dev/null
+    apk add curl dnsmasq-full nftables 2>/dev/null
 
     # ---------------- nftables ----------------
     nft list table inet fw4 >/dev/null 2>&1 || nft add table inet fw4
     nft list set inet fw4 vpn_domains >/dev/null 2>&1 || \
         nft add set inet fw4 vpn_domains '{ type ipv4_addr; flags dynamic; }'
+
     nft list chain inet fw4 mangle_prerouting >/dev/null 2>&1 || \
         nft add chain inet fw4 mangle_prerouting '{ type filter hook prerouting priority mangle; }'
 
-    # Удаляем старое правило маркировки (если есть)
-    nft list chain inet fw4 mangle_prerouting | grep -q '@vpn_domains' && \
-        nft delete rule inet fw4 mangle_prerouting handle 0 2>/dev/null || true
-
     # ---------------- NFT rule – помечаем пакеты ----------------
+    nft delete rule inet fw4 mangle_prerouting handle 0 2>/dev/null || true
     nft add rule inet fw4 mangle_prerouting ip daddr @vpn_domains meta mark set 0x1
 
     # ---------------- Таблица маршрутов ----------------
     grep -q '^200 vpn' /etc/iproute2/rt_tables 2>/dev/null || echo "200 vpn" >> /etc/iproute2/rt_tables
     ip rule add fwmark 1 table vpn 2>/dev/null || true
+
+    # ---------------- Маршрут через WG ----------------
     ip route add table vpn default dev wg0 2>/dev/null || true
 
     # ---------------- dnsmasq ----------------
     mkdir -p /tmp/dnsmasq.d
-    echo "" > /tmp/dnsmasq.d/vpn_domains.conf
+    curl -s "$DOMAINS_URL" > /tmp/dnsmasq.d/vpn_domains.conf
 
-    # ---------------- Основной список ----------------
-    curl -s "$DOMAINS_URL" | while read DOMAIN; do
-        [ -n "$DOMAIN" ] && echo "Resolving $DOMAIN..." && \
-        dig +short "$DOMAIN" | grep -E '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$' | \
-        while read IP; do
-            nft add element inet fw4 vpn_domains { $IP } 2>/dev/null
-            echo "nftset=/$DOMAIN/inet#fw4#vpn_domains" >> /tmp/dnsmasq.d/vpn_domains.conf
-        done
-    done
-
-    # ---------------- Кастомные домены из /etc/config/dhcp ----------------
+    # ---------------- кастомные домены ----------------
     if uci show dhcp | grep -q "config ipset"; then
         uci show dhcp | grep "config ipset" | while read -r line; do
             DOMAIN=$(echo "$line" | sed -n "s/.*list domain '\([^']*\)'.*/\1/p")
-            [ -n "$DOMAIN" ] && echo "Resolving $DOMAIN..." && \
-            dig +short "$DOMAIN" | grep -E '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$' | \
-            while read IP; do
-                nft add element inet fw4 vpn_domains { $IP } 2>/dev/null
-                echo "nftset=/$DOMAIN/inet#fw4#vpn_domains" >> /tmp/dnsmasq.d/vpn_domains.conf
-            done
+            [ -n "$DOMAIN" ] && echo "nftset=/$DOMAIN/inet#fw4#vpn_domains" >> /tmp/dnsmasq.d/vpn_domains.conf
         done
     fi
 
@@ -80,9 +65,24 @@ EOF
 START=99
 start() {
     echo "Updating VPN domain list..."
-    /root/setup_split_vpn_domains.sh
+    DOMAINS_URL="$DOMAINS_URL"
+
+    # Обновляем конфиг dnsmasq
+    curl -s "\$DOMAINS_URL" > /tmp/dnsmasq.d/vpn_domains.conf
+
+    # Кастомные домены
+    if uci show dhcp | grep -q "config ipset"; then
+        uci show dhcp | grep "config ipset" | while read -r line; do
+            DOMAIN=\$(echo "\$line" | sed -n "s/.*list domain '\([^']*\)'.*/\1/p")
+            [ -n "\$DOMAIN" ] && echo "nftset=/\$DOMAIN/inet#fw4#vpn_domains" >> /tmp/dnsmasq.d/vpn_domains.conf
+        done
+    fi
+
+    # dnsmasq сам обновляет NFT set
+    /etc/init.d/dnsmasq restart
 }
 EOF
+
     chmod +x /etc/init.d/update-vpn-domains
     /etc/init.d/update-vpn-domains enable
     (crontab -l 2>/dev/null | grep -v update-vpn-domains; echo "0 */6 * * * /etc/init.d/update-vpn-domains start") | crontab -

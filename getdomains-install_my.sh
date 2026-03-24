@@ -107,7 +107,7 @@ EOF
     echo "0 */6 * * * /etc/init.d/update-vpn-domains start") | crontab -
     /etc/init.d/cron restart
 
-    echo "✅ Split-tunnel configured and auto-update enabled!"
+    echo "✅ Split-tunnel configured and auto-update enabled! RU"
     echo "👉 Add custom domains in $CUSTOM_FILE"
     echo "👉 After adding run: /etc/init.d/update-vpn-domains start"
     echo "👉 For debugging traffic use: logread | grep 'VPN MARK'"

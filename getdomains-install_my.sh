@@ -131,6 +131,148 @@ EOF
     echo "Test: nslookup -port=5353 google.com 127.0.0.1"
 }
 
+setup_split_vpn_domains_fixed() {
+    BASE_URL="https://raw.githubusercontent.com/itdoginfo/allow-domains/main/Russia/inside-dnsmasq-nfset.lst"
+    CUSTOM_FILE="/etc/vpn/domains.lst"
+    VPN_IFACE="wg0"
+
+    # ---------------- dnscrypt-proxy2 ----------------
+    setup_dnscrypt_proxy
+
+    echo "=========================================="
+    echo "Setting up Split VPN Routing (FIXED)"
+    echo "=========================================="
+
+    # ---------------- Find PBR nftset ----------------
+    PBR_SET=$(nft list sets inet fw4 2>/dev/null | grep -o 'pbr_wg0_4_dst_ip[^ ]*' | head -1)
+    
+    if [ -z "$PBR_SET" ]; then
+        echo "❌ ERROR: PBR nftset not found!"
+        echo "Starting PBR to create it..."
+        
+        # Настройка PBR
+        cat > /etc/config/pbr << 'EOF'
+config pbr 'config'
+    option enabled '1'
+    option verbosity '2'
+    option resolver_set 'dnsmasq.nftset'
+    option strict_enforcement '0'
+    option boot_timeout '30'
+    option ipv6_enabled '0'
+
+config interface
+    option name 'vpn'
+    option enabled '1'
+    option interface 'wg0'
+    option table 'vpn'
+    option fwmark '0x10000'
+    option priority '1000'
+
+config policy
+    option name 'vpn_domains'
+    option interface 'vpn'
+    option proto 'all'
+    option enabled '1'
+    option lookup 'vpn'
+    option priority '100'
+    option nftset '4#inet#fw4#vpn_domains'
+EOF
+        
+        /etc/init.d/pbr enable
+        /etc/init.d/pbr restart
+        sleep 3
+        
+        PBR_SET="vpn_domains"
+    fi
+    
+    echo "✅ Using nftset: $PBR_SET"
+
+    # ---------------- Configure dnsmasq to use PBR set ----------------
+    mkdir -p /etc/dnsmasq.d
+    
+    # Очищаем старую конфигурацию
+    > /etc/dnsmasq.d/99-vpn-domains.conf
+    
+    # Скачиваем и конвертируем список доменов - используем PBR_SET
+    echo "Downloading domain list..."
+    curl -s "$BASE_URL" | grep -v '^#' | grep -v '^$' | while read line; do
+        if [[ "$line" =~ nftset=/([^/]+)/ ]]; then
+            domain="${BASH_REMATCH[1]}"
+            echo "nftset=/$domain/4#inet#fw4#$PBR_SET" >> /etc/dnsmasq.d/99-vpn-domains.conf
+        fi
+    done
+
+    # Добавляем кастомные домены
+    if [ -f "$CUSTOM_FILE" ] && [ -s "$CUSTOM_FILE" ]; then
+        echo "Adding custom domains..."
+        while read -r DOMAIN; do
+            [[ -z "$DOMAIN" || "$DOMAIN" =~ ^# ]] && continue
+            DOMAIN=$(echo "$DOMAIN" | xargs)
+            [ -z "$DOMAIN" ] && continue
+            echo "nftset=/$DOMAIN/4#inet#fw4#$PBR_SET" >> /etc/dnsmasq.d/99-vpn-domains.conf
+        done < "$CUSTOM_FILE"
+    fi
+
+    # Убираем дубликаты
+    sort -u /etc/dnsmasq.d/99-vpn-domains.conf -o /etc/dnsmasq.d/99-vpn-domains.conf
+    
+    DOMAIN_COUNT=$(grep -c '^nftset=' /etc/dnsmasq.d/99-vpn-domains.conf)
+    echo "✅ Created config with $DOMAIN_COUNT domains"
+
+    # ---------------- Restart dnsmasq ----------------
+    /etc/init.d/dnsmasq restart
+    sleep 2
+
+    # ---------------- Setup routing ----------------
+    grep -q "^200 vpn" /etc/iproute2/rt_tables || echo "200 vpn" >> /etc/iproute2/rt_tables
+    ip route add default dev "$VPN_IFACE" table vpn 2>/dev/null || true
+    ip rule add fwmark 0x10000 table vpn priority 1000 2>/dev/null || true
+
+    # ---------------- Restart PBR ----------------
+    /etc/init.d/pbr restart
+    sleep 2
+
+    # ---------------- Verification ----------------
+    echo ""
+    echo "=========================================="
+    echo "VERIFICATION"
+    echo "=========================================="
+    
+    # Тестируем добавление IP
+    echo "📊 Testing nftset addition..."
+    nft add element inet fw4 $PBR_SET { 1.2.3.4 } 2>/dev/null
+    if nft list set inet fw4 $PBR_SET 2>/dev/null | grep -q "1.2.3.4"; then
+        echo "  ✅ Successfully added IP to $PBR_SET"
+        nft delete element inet fw4 $PBR_SET { 1.2.3.4 } 2>/dev/null
+    else
+        echo "  ❌ Failed to add IP to $PBR_SET"
+    fi
+    
+    # Тестируем DNS
+    echo ""
+    echo "📊 Testing DNS resolution..."
+    echo "  Resolving google.com..."
+    nslookup google.com 127.0.0.1 > /dev/null 2>&1
+    
+    sleep 2
+    
+    echo "📊 Checking if IPs were added to $PBR_SET:"
+    IP_COUNT=$(nft list set inet fw4 $PBR_SET 2>/dev/null | grep -E '([0-9]{1,3}\.){3}[0-9]{1,3}' | wc -l)
+    echo "  Total IPs in set: $IP_COUNT"
+    
+    echo ""
+    echo "=========================================="
+    echo "✅ Setup Complete!"
+    echo "=========================================="
+    echo "Monitor with:"
+    echo "  nft list set inet fw4 $PBR_SET | grep -v 'elements = {'"
+    echo "  tail -f /var/log/dnsmasq.log"
+    echo ""
+    echo "Test with:"
+    echo "  nslookup rutracker.org 127.0.0.1"
+    echo "  nft list set inet fw4 $PBR_SET | tail -20"
+}
+
 setup_split_vpn_domains() {
     BASE_URL="https://raw.githubusercontent.com/itdoginfo/allow-domains/main/Russia/inside-dnsmasq-nfset.lst"
     CUSTOM_FILE="/etc/vpn/domains.lst"
@@ -282,7 +424,7 @@ route_vpn() {
     if [ "$MODE" = "split" ]; then
         echo "Configuring SPLIT tunnel via WG... -"
 
-        setup_split_vpn_domains 
+        setup_split_vpn_domains_fixed 
     fi
 }
 

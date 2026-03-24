@@ -49,7 +49,15 @@ setup_split_vpn_domains() {
     if uci show dhcp | grep -q "config ipset"; then
         uci show dhcp | grep "config ipset" | while read -r line; do
             DOMAIN=$(echo "$line" | sed -n "s/.*list domain '\([^']*\)'.*/\1/p")
-            [ -n "$DOMAIN" ] && echo "nftset=/$DOMAIN/inet#fw4#vpn_domains" >> /tmp/dnsmasq.d/vpn_domains.conf
+            if [ -n "$DOMAIN" ]; then
+                echo "Resolving $DOMAIN..."
+                IP=$(nslookup "$DOMAIN" 1.1.1.1 2>/dev/null | awk '/^Address: / {print $2}')
+                for ip in $IP; do
+                    [ -n "$ip" ] && nft add element inet fw4 vpn_domains { $ip }
+                done
+                # dnsmasq запись для логики nftset
+                echo "nftset=/$DOMAIN/inet#fw4#vpn_domains" >> /tmp/dnsmasq.d/vpn_domains.conf
+            fi
         done
     fi
 

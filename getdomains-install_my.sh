@@ -145,7 +145,7 @@ route_vpn() {
     fi
 
     if [ "$MODE" = "split" ]; then
-        echo "Configuring SPLIT tunnel via WG..."
+        echo "Configuring SPLIT tunnel via WG... -"
 
         setup_split_vpn_domains
     fi

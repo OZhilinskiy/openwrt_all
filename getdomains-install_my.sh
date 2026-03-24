@@ -42,7 +42,7 @@ setup_split_vpn_domains() {
     # ---------------- пакеты ----------------
     echo ""
     echo "[2/7] Installing packages..."
-    apk add curl pbr #dnsmasq-full nftables
+    apk add curl pbr dnsmasq-full nftables
     echo "✅ Packages installed"
     
     # ---------------- директории ----------------
@@ -61,32 +61,66 @@ setup_split_vpn_domains() {
     
     # ---------------- скачиваем и фильтруем домены ----------------
     echo ""
-    echo "[5/7] Processing domain list..."
+    echo "[5/7] Downloading and processing domain list..."
     TEMP_LIST="/tmp/vpn_domains.txt"
-    curl -s "$BASE_URL" > "$TEMP_LIST"
     
-    if [ -f "$CUSTOM_FILE" ]; then
-        echo "   Adding custom domains..."
+    echo "   Downloading from $BASE_URL ..."
+    curl -s -o "$TEMP_LIST" "$BASE_URL"
+    
+    # Проверяем, что скачалось
+    DOWNLOADED_COUNT=$(grep -v '^#' "$TEMP_LIST" | grep -v '^$' | wc -l)
+    echo "   Downloaded $DOWNLOADED_COUNT domains from base URL"
+    
+    if [ -f "$CUSTOM_FILE" ] && [ -s "$CUSTOM_FILE" ]; then
+        CUSTOM_COUNT=$(grep -v '^#' "$CUSTOM_FILE" | grep -v '^$' | wc -l)
+        echo "   Adding $CUSTOM_COUNT custom domains from $CUSTOM_FILE"
         cat "$CUSTOM_FILE" >> "$TEMP_LIST"
     fi
     
     # Создаём правильный конфиг dnsmasq
+    echo "   Creating dnsmasq configuration..."
     > /etc/dnsmasq.d/vpn_domains.conf
     
+    PROCESSED=0
     while read -r DOMAIN; do
+        # Пропускаем пустые строки
         [ -z "$DOMAIN" ] && continue
+        
+        # Пропускаем комментарии
         echo "$DOMAIN" | grep -q "^#" && continue
+        
+        # Удаляем пробелы и спецсимволы
         DOMAIN=$(echo "$DOMAIN" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+        
+        # Пропускаем строки с пробелами (не домены)
         echo "$DOMAIN" | grep -q "[[:space:]]" && continue
+        
+        # Пропускаем строки с "nftset=" (старый мусор)
         echo "$DOMAIN" | grep -q "^nftset=" && continue
+        
+        # Пропускаем пустые после очистки
         [ -z "$DOMAIN" ] && continue
+        
+        # Добавляем в конфиг
         echo "nftset=/$DOMAIN/4#inet#pbr#$PBR_SET" >> /etc/dnsmasq.d/vpn_domains.conf
+        PROCESSED=$((PROCESSED + 1))
+        
+        # Показываем прогресс каждые 100 доменов
+        if [ $((PROCESSED % 100)) -eq 0 ]; then
+            echo "   Processed $PROCESSED domains..."
+        fi
     done < "$TEMP_LIST"
     
+    # Удаляем дубликаты
     sort -u /etc/dnsmasq.d/vpn_domains.conf -o /etc/dnsmasq.d/vpn_domains.conf
     
     DOMAIN_COUNT=$(grep -c '^nftset=' /etc/dnsmasq.d/vpn_domains.conf)
-    echo "✅ Added $DOMAIN_COUNT domains to configuration"
+    echo "✅ Added $DOMAIN_COUNT unique domains to configuration"
+    
+    # Показываем примеры
+    echo ""
+    echo "   📋 Example entries (first 3):"
+    head -3 /etc/dnsmasq.d/vpn_domains.conf | sed 's/^/     /'
     
     # ---------------- настройка PBR ----------------
     echo ""
@@ -138,7 +172,7 @@ TEMP_LIST="/tmp/vpn_domains_updated.txt"
 
 echo "Updating VPN domain list..."
 
-curl -s "$BASE_URL" > "$TEMP_LIST"
+curl -s -o "$TEMP_LIST" "$BASE_URL"
 
 if [ -f "$CUSTOM_FILE" ]; then
     cat "$CUSTOM_FILE" >> "$TEMP_LIST"
@@ -216,14 +250,18 @@ INIT
     echo ""
     echo "📁 Config files:"
     echo "  - PBR config:      /etc/config/pbr"
-    echo "  - Domains list:    /etc/dnsmasq.d/vpn_domains.conf ($DOMAIN_COUNT entries)"
+    echo "  - Domains config:  /etc/dnsmasq.d/vpn_domains.conf"
     echo "  - Custom domains:  $CUSTOM_FILE"
+    echo ""
+    echo "📋 Domain statistics:"
+    echo "  - Total domains in config: $DOMAIN_COUNT"
+    echo "  - Sample domains:"
+    head -5 /etc/dnsmasq.d/vpn_domains.conf | sed 's/^/    /'
     echo ""
     echo "📌 ADD CUSTOM DOMAINS:"
     echo "  ┌─────────────────────────────────────────────────────────────┐"
     echo "  │ echo 'telegram.org' >> $CUSTOM_FILE                        │"
     echo "  │ echo 'youtube.com'  >> $CUSTOM_FILE                        │"
-    echo "  │ echo 'google.com'   >> $CUSTOM_FILE                        │"
     echo "  │ /etc/vpn/update-pbr-domains.sh  # Apply changes            │"
     echo "  └─────────────────────────────────────────────────────────────┘"
     echo ""

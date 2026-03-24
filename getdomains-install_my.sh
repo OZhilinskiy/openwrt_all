@@ -25,16 +25,14 @@ setup_split_vpn_domains() {
     echo ""
     
     # ---------------- проверка WireGuard ----------------
-    echo "[1/8] Checking WireGuard interface..."
+    echo "[1/7] Checking WireGuard interface..."
     if ! ip link show "$VPN_IFACE" >/dev/null 2>&1; then
         echo "❌ ERROR: Interface $VPN_IFACE not found!"
         echo "   Please configure WireGuard first."
-        echo "   Check: ip link show"
         return 1
     fi
     echo "✅ Interface $VPN_IFACE exists"
     
-    # Поднимаем интерфейс если нужн�?о
     if ! ip link show "$VPN_IFACE" | grep -q "UP"; then
         echo "   Bringing up $VPN_IFACE..."
         ip link set "$VPN_IFACE" up
@@ -43,28 +41,27 @@ setup_split_vpn_domains() {
     
     # ---------------- пакеты ----------------
     echo ""
-    echo "[2/8] Installing packages..."
-    #opkg update >/dev/null 2>&1
-    apk add curl pbr #dnsmasq-full nftables >/dev/null 2>&1
+    echo "[2/7] Installing packages..."
+    apk add curl pbr dnsmasq-full nftables
     echo "✅ Packages installed"
     
     # ---------------- директории ----------------
     echo ""
-    echo "[3/8] Creating directories..."
+    echo "[3/7] Creating directories..."
     mkdir -p /etc/vpn /etc/dnsmasq.d
     touch "$CUSTOM_FILE"
     echo "✅ Directories created"
     
     # ---------------- создаём nftables set ----------------
     echo ""
-    echo "[4/8] Creating nftables set..."
+    echo "[4/7] Creating nftables set..."
     nft add table inet pbr 2>/dev/null || true
     nft add set inet pbr $PBR_SET '{ type ipv4_addr; flags interval; auto-merge; }' 2>/dev/null || true
-    echo "✅ nftables set 'inet pbr $PBR_SET' created"
+    echo "✅ nftables set created"
     
-    # ---------------- обновляем список доменов ----------------
+    # ---------------- скачиваем и фильтруем домены ----------------
     echo ""
-    echo "[5/8] Downloading domain list..."
+    echo "[5/7] Processing domain list..."
     TEMP_LIST="/tmp/vpn_domains.txt"
     curl -s "$BASE_URL" > "$TEMP_LIST"
     
@@ -73,85 +70,66 @@ setup_split_vpn_domains() {
         cat "$CUSTOM_FILE" >> "$TEMP_LIST"
     fi
     
-    # ---------------- создаём конфиг для dnsmasq ----------------
-    echo "   Creating dnsmasq configuration..."
+    # Создаём правильный конфиг dnsmasq
     > /etc/dnsmasq.d/vpn_domains.conf
     
     while read -r DOMAIN; do
         [ -z "$DOMAIN" ] && continue
         echo "$DOMAIN" | grep -q "^#" && continue
-        # Очищаем домен от пробелов и спецсимволов
-        DOMAIN=$(echo "$DOMAIN" | xargs)
+        DOMAIN=$(echo "$DOMAIN" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+        echo "$DOMAIN" | grep -q "[[:space:]]" && continue
+        echo "$DOMAIN" | grep -q "^nftset=" && continue
+        [ -z "$DOMAIN" ] && continue
         echo "nftset=/$DOMAIN/4#inet#pbr#$PBR_SET" >> /etc/dnsmasq.d/vpn_domains.conf
     done < "$TEMP_LIST"
+    
+    sort -u /etc/dnsmasq.d/vpn_domains.conf -o /etc/dnsmasq.d/vpn_domains.conf
     
     DOMAIN_COUNT=$(grep -c '^nftset=' /etc/dnsmasq.d/vpn_domains.conf)
     echo "✅ Added $DOMAIN_COUNT domains to configuration"
     
-    # ---------------- настройка PBR через UCI ----------------
+    # ---------------- настройка PBR ----------------
     echo ""
-    echo "[6/8] Configuring PBR..."
+    echo "[6/7] Configuring PBR..."
     
-    # Очищаем старую конфигурацию
-    rm -f /etc/config/pbr
+    cat > /etc/config/pbr << PBRCONF
+config pbr 'config'
+    option enabled '1'
+    option verbosity '2'
+    option resolver_set 'dnsmasq.nftset'
+    option strict_enforcement '0'
+    option boot_timeout '30'
+    option ipv6_enabled '0'
+    option nft_rule_counter '0'
+    option nft_set_auto_merge '1'
+    list supported_interface '$VPN_IFACE'
+
+config policy
+    option name 'vpn_domains'
+    option interface '$VPN_IFACE'
+    option dest_addr '$PBR_SET.set'
+    option enabled '1'
+    option proto 'all'
+    option chain 'prerouting'
+PBRCONF
     
-    # Базовая конфигурация
-    uci set pbr.config=pbr
-    uci set pbr.config.enabled='1'
-    uci set pbr.config.verbosity='2'
-    uci set pbr.config.resolver_set='dnsmasq.nftset'
-    uci set pbr.config.strict_enforcement='0'
-    uci set pbr.config.boot_timeout='30'
-    uci set pbr.config.ipv6_enabled='0'
-    uci set pbr.config.nft_rule_counter='0'
-    uci set pbr.config.nft_set_auto_merge='1'
-    
-    # КРИТИЧЕСКИ ВАЖНО: добавляем WireGuard интерфейс в supported_interface
-    uci set pbr.config.supported_interface="$VPN_IFACE"
-    
-    # Добавляем политику
-    uci add pbr policy
-    uci set pbr.@policy[-1].name='vpn_domains'
-    uci set pbr.@policy[-1].interface="$VPN_IFACE"
-    uci set pbr.@policy[-1].dest_addr="$PBR_SET.set"
-    uci set pbr.@policy[-1].enabled='1'
-    uci set pbr.@policy[-1].proto='all'
-    uci set pbr.@policy[-1].chain='prerouting'
-    
-    uci commit pbr
     echo "✅ PBR configured"
     
     # ---------------- настройка маршрутизации ----------------
     echo ""
-    echo "[7/8] Configuring routing..."
+    echo "[7/7] Configuring routing..."
     
-    # Добавляем таблицу маршрутизации
     if ! grep -q '^200 vpn' /etc/iproute2/rt_tables 2>/dev/null; then
         echo "200 vpn" >> /etc/iproute2/rt_tables
-        echo "   Added routing table 'vpn'"
     fi
     
-    # Получаем IP адрес интерфейса wg0
-    WG_IP=$(ip addr show "$VPN_IFACE" 2>/dev/null | grep -oP '(?<=inet\s)\d+(\.\d+){3}' | head -1)
-    if [ -n "$WG_IP" ]; then
-        echo "   WireGuard IP: $WG_IP"
-    else
-        echo "   ⚠️  Warning: No IP assigned to $VPN_IFACE"
-    fi
-    
-    # Добавляем маршрут по умолчанию в таблицу vpn
     ip route add table vpn default dev "$VPN_IFACE" 2>/dev/null || true
-    
-    # Добавляем правило для маркированных пакетов
     ip rule add fwmark 0x10000 table vpn 2>/dev/null || true
     
     echo "✅ Routing configured"
     
     # ---------------- скрипт обновления ----------------
-    echo ""
-    echo "[8/8] Creating update scripts..."
-    
-    cat > /etc/vpn/update-pbr-domains.sh << 'EOF'
+    cat > /etc/vpn/update-pbr-domains.sh << 'UPDATE'
 #!/bin/sh
 BASE_URL="https://raw.githubusercontent.com/itdoginfo/allow-domains/main/Russia/inside-dnsmasq-nfset.lst"
 CUSTOM_FILE="/etc/vpn/domains.lst"
@@ -160,81 +138,72 @@ TEMP_LIST="/tmp/vpn_domains_updated.txt"
 
 echo "Updating VPN domain list..."
 
-# Скачиваем список
 curl -s "$BASE_URL" > "$TEMP_LIST"
 
-# Добавляем кастомные домены
 if [ -f "$CUSTOM_FILE" ]; then
     cat "$CUSTOM_FILE" >> "$TEMP_LIST"
 fi
 
-# Обновляем конфиг dnsmasq
 > /etc/dnsmasq.d/vpn_domains.conf
 
 while read -r DOMAIN; do
     [ -z "$DOMAIN" ] && continue
     echo "$DOMAIN" | grep -q "^#" && continue
-    DOMAIN=$(echo "$DOMAIN" | xargs)
+    DOMAIN=$(echo "$DOMAIN" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+    echo "$DOMAIN" | grep -q "[[:space:]]" && continue
+    echo "$DOMAIN" | grep -q "^nftset=" && continue
+    [ -z "$DOMAIN" ] && continue
     echo "nftset=/$DOMAIN/4#inet#pbr#$PBR_SET" >> /etc/dnsmasq.d/vpn_domains.conf
 done < "$TEMP_LIST"
 
-# Перезапускаем dnsmasq
-/etc/init.d/dnsmasq restart
+sort -u /etc/dnsmasq.d/vpn_domains.conf -o /etc/dnsmasq.d/vpn_domains.conf
 
-# Перезапускаем PBR
+/etc/init.d/dnsmasq restart
 /etc/init.d/pbr restart
 
 echo "Domain list updated: $(grep -c '^nftset=' /etc/dnsmasq.d/vpn_domains.conf) domains"
 
 rm -f "$TEMP_LIST"
-EOF
+UPDATE
     
     chmod +x /etc/vpn/update-pbr-domains.sh
     
-    # ---------------- hotplug скрипт для автоматического перезапуска ----------------
+    # ---------------- hotplug скрипт ----------------
     mkdir -p /etc/hotplug.d/iface
-    cat > /etc/hotplug.d/iface/90-pbr-wg << EOF
+    cat > /etc/hotplug.d/iface/90-pbr-wg << HOTPLUG
 #!/bin/sh
-# Reload PBR when wg0 interface changes
 if [ "\$INTERFACE" = "$VPN_IFACE" ]; then
     logger -t pbr "Interface $VPN_IFACE \$ACTION, reloading..."
     /etc/init.d/pbr restart
 fi
-EOF
+HOTPLUG
     chmod +x /etc/hotplug.d/iface/90-pbr-wg
     
-    # ---------------- init скрипт для автообновления доменов ----------------
-    cat > /etc/init.d/update-vpn-domains << 'EOF'
+    # ---------------- init скрипт ----------------
+    cat > /etc/init.d/update-vpn-domains << 'INIT'
 #!/bin/sh /etc/rc.common
 START=99
-USE_PROCD=0
 
 start() {
     /etc/vpn/update-pbr-domains.sh
     logger -t vpn-domains "Domain list updated"
 }
-EOF
-    
+INIT
     chmod +x /etc/init.d/update-vpn-domains
     /etc/init.d/update-vpn-domains enable
     
-    # ---------------- cron (обновление каждые 6 часов) ----------------
+    # ---------------- cron ----------------
     (crontab -l 2>/dev/null | grep -v update-pbr-domains; \
-     echo "0 */6 * * * /etc/vpn/update-pbr-domains.sh") | crontab -
+     echo "0 */6 * * * /etc/vpn/update-pbr-domains.sh") | crontab - 2>/dev/null
     
-    # ---------------- перезапуск сервисов ----------------
+    # ---------------- перезапуск ----------------
     echo ""
     echo "Starting services..."
     
-    # Перезапускаем dnsmasq
     /etc/init.d/dnsmasq restart
-    
-    # Включаем и запускаем PBR
     /etc/init.d/pbr enable
     /etc/init.d/pbr restart
-    
-    # Запускаем cron
-    /etc/init.d/cron restart
+    /etc/init.d/cron restart 2>/dev/null || true
     
     # ---------------- финальная проверка ----------------
     echo ""
@@ -242,48 +211,30 @@ EOF
     echo "✅ Setup Complete!"
     echo "=========================================="
     echo ""
-    echo "📊 Status Summary:"
-    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-    
-    # Проверка PBR
-    if /etc/init.d/pbr status >/dev/null 2>&1; then
-        echo "✓ PBR: Running"
-    else
-        echo "✗ PBR: Not running"
-    fi
-    
-    # Проверка интерфейса
-    if ip link show "$VPN_IFACE" >/dev/null 2>&1; then
-        echo "✓ Interface: $VPN_IFACE exists"
-    else
-        echo "✗ Interface: $VPN_IFACE NOT found"
-    fi
-    
-    # Проверка nftables set
-    SET_COUNT=$(nft list set inet pbr $PBR_SET 2>/dev/null | grep -c '^[0-9]' || echo "0")
-    echo "✓ nftables set: $SET_COUNT IPs (will populate on DNS requests)"
-    
-    # Проверка доменов
-    echo "✓ Domains configured: $DOMAIN_COUNT"
-    
+    echo "📊 Status:"
+    /etc/init.d/pbr status
     echo ""
-    echo "📝 Useful Commands:"
-    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-    echo "  Check PBR status:     /etc/init.d/pbr status"
-    echo "  Manual domain update: /etc/vpn/update-pbr-domains.sh"
-    echo "  Add custom domains:   echo 'example.com' >> $CUSTOM_FILE"
-    echo "  View PBR logs:        logread | grep pbr"
-    echo "  View nftables:        nft list sets inet pbr"
-    echo "  Check routing:        ip route show table vpn"
+    echo "📁 Config files:"
+    echo "  - PBR config:      /etc/config/pbr"
+    echo "  - Domains list:    /etc/dnsmasq.d/vpn_domains.conf ($DOMAIN_COUNT entries)"
+    echo "  - Custom domains:  $CUSTOM_FILE"
     echo ""
-    echo "🔍 Testing:"
-    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-    echo "  1. Add test domain:   echo 'ifconfig.me' >> $CUSTOM_FILE"
-    echo "  2. Update domains:    /etc/vpn/update-pbr-domains.sh"
-    echo "  3. From LAN client:   curl ifconfig.me"
-    echo "  4. Check if IP is VPN's IP"
+    echo "📌 ADD CUSTOM DOMAINS:"
+    echo "  ┌─────────────────────────────────────────────────────────────┐"
+    echo "  │ echo 'telegram.org' >> $CUSTOM_FILE                        │"
+    echo "  │ echo 'youtube.com'  >> $CUSTOM_FILE                        │"
+    echo "  │ echo 'google.com'   >> $CUSTOM_FILE                        │"
+    echo "  │ /etc/vpn/update-pbr-domains.sh  # Apply changes            │"
+    echo "  └─────────────────────────────────────────────────────────────┘"
     echo ""
-    echo "⚠️  Note: Domain policies work after DNS requests from LAN clients"
+    echo "📝 Commands:"
+    echo "  Update domains:     /etc/vpn/update-pbr-domains.sh"
+    echo "  Check nftables set: nft list set inet pbr $PBR_SET"
+    echo "  Check PBR status:   /etc/init.d/pbr status"
+    echo "  View logs:          logread | grep -E '(pbr|nftset)'"
+    echo ""
+    echo "⚠️  Important: Domain policies work AFTER DNS requests from LAN clients"
+    echo ""
 }
 
 # ---------------- ФУНКЦИЯ ROUTE ----------------

@@ -62,28 +62,23 @@ setup_split_vpn_domains() {
     killall dnsmasq dnscrypt-proxy 2>/dev/null
     /etc/init.d/dnscrypt-proxy stop 2>/dev/null
 
+    # Создаём правильный конфиг с прямыми (static) серверами, без внешних источников
     cat > /etc/dnscrypt-proxy/dnscrypt-proxy.toml << 'EOF'
-# dnscrypt-proxy minimal config for OpenWrt
 listen_addresses = ['127.0.0.1:5353']
 max_clients = 250
 ipv4_servers = true
 ipv6_servers = false
 force_tcp = false
 timeout = 2500
-keepalive = 30
-lb_strategy = 'p2'
 log_level = 2
 log_file = '/var/log/dnscrypt-proxy.log'
 
-# Прямые upstream сервера
-server_names = ['google', 'cloudflare', 'yandex']
-
-# Настройки серверов
-[sources]
-  [sources.'fixed-servers']
-  urls = []
-  cache_file = '/tmp/fixed-servers.md'
-  refresh_delay = 72
+# Статический список проверенных DoH-серверов
+[static]
+  [static.'cloudflare']
+  stamp = 'sdns://AgcAAAAAAAAAB2Nsb3VkZmxhcmUKL2Rucy1xdWVyeQ9kbnMuY2xvdWRmbGFyZS5jb20KL2Rucy1xdWVyeQ'
+  [static.'google']
+  stamp = 'sdns://AgUAAAAAAAAAACDySAtwhQVUlSgS8ZWkEdXbE0MneHNS9VHimNnN_XyFGWYuZG5zLmdvb2dsZS5jb20'
 EOF
 
     /etc/init.d/dnscrypt-proxy start

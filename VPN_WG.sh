@@ -168,8 +168,6 @@ echo ""
 read -r -p "Select option (1-3): " choice
 
 case "$choice" in
-    
-    case "$choice" in
         1)
             echo ""
             setup_wg_client

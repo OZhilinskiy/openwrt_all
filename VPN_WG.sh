@@ -173,11 +173,11 @@ case "$choice" in
         setup_wg_client
         ;;
     2)
-        echo ""
+        echo "Skipped"
         
         ;;
     3)
-        echo ""
+        echo "Skipped"
         
         ;;
     *)

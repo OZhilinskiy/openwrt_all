@@ -5,12 +5,13 @@ setup_wg_client() {
     printf "\033[32;1mConfigure WireGuard\033[0m\n"
 
     # Проверка установки пакета через apk
-    if apk info wireguard-tools >/dev/null 2>&1; then
+    if apk info -e wireguard-tools >/dev/null 2>&1; then
         echo "✓ WireGuard already installed"
     else
-        echo "Installing wireguard-tools and luci-proto-wireguard..."
+        echo "Installing wireguard-tools..."
         apk update
         apk add wireguard-tools luci-proto-wireguard
+        
         if [ $? -ne 0 ]; then
             echo "Error: Failed to install packages"
             return 1
@@ -115,7 +116,7 @@ setup_wg_client() {
             uci delete firewall.@zone[$i]
         fi
     done    
-    
+
     # Создаем новую зону
     uci add firewall zone
     uci set firewall.@zone[-1].name='vpn_wg0'

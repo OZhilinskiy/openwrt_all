@@ -1,8 +1,5 @@
 #!/bin/sh
 
-# Минимальный скрипт настройки WireGuard клиента
-#!/bin/sh
-
 setup_wg_client() {
 
     printf "\033[32;1mConfigure WireGuard\033[0m\n"
@@ -113,7 +110,11 @@ setup_wg_client() {
     echo "Configuring firewall..."
     
     # Удаляем старую зону если есть
-    uci delete firewall.@zone[$(uci show firewall | grep -n "name='vpn_wg0'" | cut -d: -f1 | head -1 | cut -d[ -f2 | cut -d] -f1)] 2>/dev/null
+    for i in $(uci show firewall | grep "=zone" | cut -d[ -f2 | cut -d] -f1); do
+        if [ "$(uci get firewall.@zone[$i].name 2>/dev/null)" = "vpn_wg0" ]; then
+            uci delete firewall.@zone[$i]
+        fi
+    done    
     
     # Создаем новую зону
     uci add firewall zone

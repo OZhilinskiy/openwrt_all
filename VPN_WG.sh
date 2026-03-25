@@ -112,7 +112,7 @@ setup_wg_client() {
     
     # Удаляем старую зону если есть
     for i in $(uci show firewall | grep "=zone" | cut -d[ -f2 | cut -d] -f1); do
-        if [ "$(uci get firewall.@zone[$i].name 2>/dev/null)" = "vpn_wg0" ]; then
+        if [ "$(uci get firewall.@zone[$i].name 2>/dev/null)" = "wg0" ]; then
             uci delete firewall.@zone[$i]
         fi
     done    
@@ -157,5 +157,34 @@ setup_wg_client() {
     ip route show | grep default
 }
 
-# Вызов функции
-setup_wg_client
+echo "=========================================="
+echo "WireGuard Setup Script"
+echo "=========================================="
+echo ""
+echo "  1. Configure WG for policy-based routing (split tunneling)"
+echo "  2. Route all traffic through WG"
+echo "  3. Skip"
+echo ""
+read -r -p "Select option (1-3): " choice
+
+case "$choice" in
+    
+    case "$choice" in
+        1)
+            echo ""
+            setup_wg_client
+            ;;
+        2)
+            echo ""
+            
+            ;;
+        3)
+            echo ""
+            
+            ;;
+        *)
+            echo "Invalid option"
+            ;;
+    esac
+}
+

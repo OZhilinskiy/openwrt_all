@@ -13,7 +13,7 @@ setup_wg_client() {
     else
         echo "Installing wireguard-tools..."
         apk update
-        apk add wireguard-tools
+        apk add wireguard-tools luci-proto-wireguard
     fi
 
     # Удаляем старые настройки

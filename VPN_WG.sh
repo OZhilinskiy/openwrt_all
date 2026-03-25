@@ -3,8 +3,6 @@
 # Минимальный скрипт настройки WireGuard клиента
 setup_wg_client() {
 
-    setup_wg_client() {
-
     printf "\033[32;1mConfigure WireGuard\033[0m\n"
 
     # Проверка установки пакета через apk

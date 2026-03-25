@@ -59,7 +59,7 @@ setup_wg_client() {
 
     # Ввод endpoint host
     while true; do
-        read -r -p "Enter Endpoint host (Domain or IP) (from [Peer]): " WG_ENDPOINT
+        read -r -p "Enter Endpoint host (Domain or IP) without port (from [Peer]): " WG_ENDPOINT
         if [ -n "$WG_ENDPOINT" ]; then
             break
         else
@@ -119,7 +119,7 @@ setup_wg_client() {
 
     # Создаем новую зону
     uci add firewall zone
-    uci set firewall.@zone[-1].name='vpn_wg0'
+    uci set firewall.@zone[-1].name='wg0'
     uci set firewall.@zone[-1].input='ACCEPT'
     uci set firewall.@zone[-1].output='ACCEPT'
     uci set firewall.@zone[-1].forward='ACCEPT'
@@ -129,11 +129,11 @@ setup_wg_client() {
     # Разрешаем пересылку из LAN в VPN
     uci add firewall forwarding
     uci set firewall.@forwarding[-1].src='lan'
-    uci set firewall.@forwarding[-1].dest='vpn_wg0'
+    uci set firewall.@forwarding[-1].dest='wg0'
 
     # Разрешаем VPN в WAN
     uci add firewall forwarding
-    uci set firewall.@forwarding[-1].src='vpn_wg0'
+    uci set firewall.@forwarding[-1].src='wg0'
     uci set firewall.@forwarding[-1].dest='wan'
 
     uci commit firewall
@@ -153,6 +153,7 @@ setup_wg_client() {
     wg show
     echo ""
     echo "Checking default route (should be WAN, not wg0):"
+    sleep 3
     ip route show | grep default
 }
 

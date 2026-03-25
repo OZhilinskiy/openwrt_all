@@ -152,16 +152,6 @@ setup_wg_client() {
     echo ""
     echo "Checking default route (should be WAN, not wg0):"
     ip route show | grep default
-    echo ""
-    echo "To route specific device through VPN, add:"
-    echo "  uci add network rule"
-    echo "  uci set network.@rule[-1].src='lan'"
-    echo "  uci set network.@rule[-1].src_ip='192.168.1.100/32'"
-    echo "  uci set network.@rule[-1].lookup='10'"
-    echo "  uci set network.@rule[-1].priority='100'"
-    echo "  uci commit network"
-    echo "  /etc/init.d/network restart"
-    echo ""
 }
 
 # Вызов функции

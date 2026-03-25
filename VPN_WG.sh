@@ -5,7 +5,7 @@ setup_wg_client() {
     printf "\033[32;1mConfigure WireGuard\033[0m\n"
 
     # Проверка установки пакета через apk
-    if apk info -e wireguard-tools >/dev/null 2>&1; then
+    if apk info --installed wireguard-tools >/dev/null 2>&1; then
         echo "✓ WireGuard already installed"
     else
         echo "Installing wireguard-tools..."

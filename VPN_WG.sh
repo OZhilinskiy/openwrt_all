@@ -1,22 +1,29 @@
 #!/bin/sh
 
 # Минимальный скрипт настройки WireGuard клиента
+#!/bin/sh
+
 setup_wg_client() {
 
     printf "\033[32;1mConfigure WireGuard\033[0m\n"
 
     # Проверка установки пакета через apk
     if apk info wireguard-tools >/dev/null 2>&1; then
-        echo "WireGuard already installed"
+        echo "✓ WireGuard already installed"
     else
-        echo "Installing wireguard-tools..."
+        echo "Installing wireguard-tools and luci-proto-wireguard..."
         apk update
         apk add wireguard-tools luci-proto-wireguard
+        if [ $? -ne 0 ]; then
+            echo "Error: Failed to install packages"
+            return 1
+        fi
     fi
 
     # Удаляем старые настройки
+    echo "Cleaning old configuration..."
     uci delete network.wg0 2>/dev/null
-    uci delete network.@wireguard_wg0[0] 2>/dev/null
+    uci delete network.wg0_client 2>/dev/null
     uci commit network
 
     # Ввод приватного ключа
@@ -35,7 +42,7 @@ setup_wg_client() {
         if echo "$WG_IP" | grep -qE '^([0-9]{1,3}\.){3}[0-9]{1,3}/[0-9]+$'; then
             break
         else
-            echo "This IP is not valid. Please enter in format: 10.0.0.2/24"
+            echo "Invalid format. Please enter in format: 10.0.0.2/24"
         fi
     done
 
@@ -106,7 +113,7 @@ setup_wg_client() {
     echo "Configuring firewall..."
     
     # Удаляем старую зону если есть
-    uci delete firewall.@zone[$(uci show firewall | grep -n "name='vpn_wg0'" | cut -d: -f1 | head -1)] 2>/dev/null
+    uci delete firewall.@zone[$(uci show firewall | grep -n "name='vpn_wg0'" | cut -d: -f1 | head -1 | cut -d[ -f2 | cut -d] -f1)] 2>/dev/null
     
     # Создаем новую зону
     uci add firewall zone
@@ -157,4 +164,5 @@ setup_wg_client() {
     echo ""
 }
 
+# Вызов функции
 setup_wg_client

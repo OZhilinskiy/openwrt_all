@@ -168,21 +168,21 @@ echo ""
 read -r -p "Select option (1-3): " choice
 
 case "$choice" in
-        1)
-            echo ""
-            setup_wg_client
-            ;;
-        2)
-            echo ""
-            
-            ;;
-        3)
-            echo ""
-            
-            ;;
-        *)
-            echo "Invalid option"
-            ;;
-    esac
+    1)
+        echo ""
+        setup_wg_client
+        ;;
+    2)
+        echo ""
+        
+        ;;
+    3)
+        echo ""
+        
+        ;;
+    *)
+        echo "Invalid option"
+        ;;
+esac
 
 

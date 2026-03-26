@@ -230,6 +230,11 @@ setup_dnsmasq() {
     uci delete dhcp.@dnsmasq[0].confdir 2>/dev/null
     uci delete dhcp.@dnsmasq[0].nftset 2>/dev/null
 
+     # 👉 ВАЖНО: удаляем ВСЕ существующие confdir
+    while uci -q delete dhcp.@dnsmasq[0].confdir; do
+        echo "Removing existing confdir entry"
+    done
+
     # Базовые настройки
     uci set dhcp.@dnsmasq[0].resolvfile='/tmp/resolv.conf.d/resolv.conf.auto'
     uci set dhcp.@dnsmasq[0].localservice='1'

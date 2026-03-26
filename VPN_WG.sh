@@ -361,7 +361,7 @@ setup_route() {
 
 setup_bpr() {
     
-    if apk info --installed pbr >/dev/null 2>&1; then
+    if apk info --installed luci-app-pbr >/dev/null 2>&1; then
         echo "✓ pbr already installed"
     else
         echo "Installing pbr..."

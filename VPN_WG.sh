@@ -360,6 +360,15 @@ setup_route() {
 }
 
 setup_bpr() {
+    
+    if apk info --installed dnsmasq-full >/dev/null 2>&1; then
+        echo "✓ pbr already installed"
+    else
+        echo "Installing pbr..."
+        apk update
+        apk add pbr luci-app-pbr || return 1
+    fi
+
     # Включаем PBR
     uci set pbr.config.enabled='1'
     uci set pbr.config.verbosity='2'

@@ -209,7 +209,8 @@ setup_route() {
     #nft add rule inet fw4 output ip daddr @vpnset meta mark set 0x1
 
     # 1. Получаем IP шлюза VPN
-    WG_IP=$(ip addr show wg0 | grep -oP 'inet \K[0-9.]+')
+    WG_IP=$(ip -4 addr show wg0 2>/dev/null | grep 'inet ' | awk '{print $2}' | cut -d/ -f1)
+
     if [ -z "$WG_IP" ]; then
         echo "Error: WireGuard interface not found or has no IP"
         exit 1

@@ -157,7 +157,8 @@ setup_wg_client() {
     ip route show | grep default
 }
 
-setup_dnsmasq() {
+setup_dnsmasq_delete() {
+    
     # Проверка установки пакета через apk
     if apk info --installed dnsmasq-full >/dev/null 2>&1; then
         echo "✓ dnsmasq-full already installed"
@@ -173,9 +174,29 @@ setup_dnsmasq() {
         fi
     fi
 
+    # Удаляем временные конфиги, которые могли быть DNS
+    rm -f /etc/dnsmasq.d/vpn-domains.conf
+    rm -f /etc/dnsmasq.d/vpn.conf
+
+    # Удаляем confdir из настроек (если он там есть)
+    uci delete dhcp.@dnsmasq[0].confdir 2>/dev/null
+    uci commit dhcp
+
     # Создаем директорию для дополнительных конфигов (если её нет)
     mkdir -p /etc/dnsmasq.d
-    
+
+    # Восстанавливаем стандартные настройки DNS
+    uci set dhcp.@dnsmasq[0].resolvfile='/tmp/resolv.conf.d/resolv.conf.auto'
+    uci set dhcp.@dnsmasq[0].localservice='1'
+    uci set dhcp.@dnsmasq[0].nonwildcard='1'
+    uci set dhcp.@dnsmasq[0].filter_aaaa='0'
+    uci set dhcp.@dnsmasq[0].filter_aaaa='0'
+
+    # Удаляем нестандартные настройки
+    uci delete dhcp.@dnsmasq[0].logqueries 2>/dev/null
+    uci delete dhcp.@dnsmasq[0].nftset 2>/dev/null
+    uci commit dhcp
+     
     uci add_list dhcp.@dnsmasq[0].confdir='/etc/dnsmasq.d'
     uci commit dhcp
     /etc/init.d/dnsmasq restart
@@ -194,6 +215,70 @@ setup_dnsmasq() {
     nft list sets inet fw4
 }
 
+setup_dnsmasq() {
+
+    if apk info --installed dnsmasq-full >/dev/null 2>&1; then
+        echo "✓ dnsmasq-full already installed"
+    else
+        echo "Installing dnsmasq-full..."
+        apk update
+        apk del dnsmasq
+        apk add dnsmasq-full || return 1
+    fi
+
+    # Очистка старых настроек
+    uci delete dhcp.@dnsmasq[0].confdir 2>/dev/null
+    uci delete dhcp.@dnsmasq[0].nftset 2>/dev/null
+
+    # Базовые настройки
+    uci set dhcp.@dnsmasq[0].resolvfile='/tmp/resolv.conf.d/resolv.conf.auto'
+    uci set dhcp.@dnsmasq[0].localservice='1'
+    uci set dhcp.@dnsmasq[0].nonwildcard='1'
+
+    # Создаем директорию для дополнительных конфигов (если её нет)
+    mkdir -p /etc/dnsmasq.d
+
+    # 👉 ВАЖНО: добавляем nftset правило
+    uci add_list dhcp.@dnsmasq[0].confdir='/etc/dnsmasq.d'
+
+    uci commit dhcp
+    # Запускаем dnsmasq
+    /etc/init.d/dnsmasq restart
+    
+    # Ждем и проверяем статус
+    sleep 3
+    if /etc/init.d/dnsmasq running; then
+        echo "✓ dnsmasq is running"
+    else
+        echo "✗ dnsmasq failed to start. Checking logs..."
+        logread | tail -10 | grep dnsmasq
+        return 1
+    fi
+
+}
+
+setup_firewall_vpnset() {
+
+    # Проверяем есть ли уже
+    if ! uci show firewall | grep -q "vpnset"; then
+        echo "Creating vpnset (fw4)..."
+
+        uci add firewall ipset
+        uci set firewall.@ipset[-1].name='vpnset'
+        uci set firewall.@ipset[-1].family='ipv4'
+        uci set firewall.@ipset[-1].match='dest_ip'
+
+        uci commit firewall
+        /etc/init.d/firewall restart
+
+        echo "✓ vpnset created"
+    else
+        echo "✓ vpnset already exists"
+    fi
+
+    nft list sets inet fw4
+}
+
 setup_route() {
 
     # Создать таблицу маршрутизации для wg0
@@ -208,26 +293,13 @@ setup_route() {
     # 5. Добавить правило маркировки в nftables
     #nft add rule inet fw4 output ip daddr @vpnset meta mark set 0x1
 
-    # 1. Получаем IP шлюза VPN
-    WG_IP=$(ip -4 addr show wg0 2>/dev/null | grep 'inet ' | awk '{print $2}' | cut -d/ -f1)
-
-    if [ -z "$WG_IP" ]; then
-        echo "Error: WireGuard interface not found or has no IP"
-        exit 1
-    fi
-
-    WG_GATEWAY=$(echo "$WG_IP" | sed 's/\.[0-9]*$/.1/')
-    echo "Your VPN IP: $WG_IP"
-    echo "VPN Gateway: $WG_GATEWAY"
-
-    # 2. Добавляем маршрут в таблицу wg0
     if ! ip route show table wg0 | grep -q default; then
         echo "Adding default route to table wg0..."
-        ip route add default via "$WG_GATEWAY" dev wg0 table wg0
+        ip route add default dev wg0 table wg0
         echo "✓ Route added"
     else
         echo "✓ Route already exists"
-    fi
+    fi      
 
     # 3. Проверяем правило fwmark
     if ! ip rule show | grep -q "fwmark 0x1 lookup wg0"; then
@@ -295,7 +367,7 @@ case "$choice" in
     2)
         echo "Skipped"
         setup_dnsmasq
-        setup_route
+        #setup_route
         ;;
     3)
         echo "Skipped"

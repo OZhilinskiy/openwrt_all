@@ -157,6 +157,125 @@ setup_wg_client() {
     ip route show | grep default
 }
 
+setup_dnsmasq() {
+    # Проверка установки пакета через apk
+    if apk info --installed dnsmasq-full >/dev/null 2>&1; then
+        echo "✓ dnsmasq-full already installed"
+    else
+        echo "Installing dnsmasq-full..."
+        apk update
+        apk del dnsmasq
+        apk add dnsmasq-full
+        
+        if [ $? -ne 0 ]; then
+            echo "Error: Failed to install packages"
+            return 1
+        fi
+    fi
+
+    # Создаем директорию для дополнительных конфигов (если её нет)
+    mkdir -p /etc/dnsmasq.d
+    
+    uci add_list dhcp.@dnsmasq[0].confdir='/etc/dnsmasq.d'
+    uci commit dhcp
+    /etc/init.d/dnsmasq restart
+
+    # Создаем набор vpnset в таблице inet fw4
+    # 4. Проверяем nftables набор
+    if ! nft list sets inet fw4 2>/dev/null | grep -q "vpnset"; then
+        echo "Creating vpnset..."
+        nft add set inet fw4 vpnset { type ipv4_addr\; flags interval, timeout\; timeout 1h\; auto-merge\; }
+        echo "✓ vpnset created"
+    else
+        echo "✓ vpnset already exists"
+    fi
+
+    # Проверяем, что набор создан
+    nft list sets inet fw4
+}
+
+setup_route() {
+
+    # Создать таблицу маршрутизации для wg0
+    echo "100     wg0" >> /etc/iproute2/rt_tables
+
+    # Добавить маршрут по умолчанию для таблицы wg0
+    #ip route add default dev wg0 table wg0
+
+    # 4. Добавить правило для помеченного трафика
+    #ip rule add fwmark 0x1 lookup wg0 priority 100
+
+    # 5. Добавить правило маркировки в nftables
+    #nft add rule inet fw4 output ip daddr @vpnset meta mark set 0x1
+
+    # 1. Получаем IP шлюза VPN
+    WG_IP=$(ip addr show wg0 | grep -oP 'inet \K[0-9.]+')
+    if [ -z "$WG_IP" ]; then
+        echo "Error: WireGuard interface not found or has no IP"
+        exit 1
+    fi
+
+    WG_GATEWAY=$(echo "$WG_IP" | sed 's/\.[0-9]*$/.1/')
+    echo "Your VPN IP: $WG_IP"
+    echo "VPN Gateway: $WG_GATEWAY"
+
+    # 2. Добавляем маршрут в таблицу wg0
+    if ! ip route show table wg0 | grep -q default; then
+        echo "Adding default route to table wg0..."
+        ip route add default via "$WG_GATEWAY" dev wg0 table wg0
+        echo "✓ Route added"
+    else
+        echo "✓ Route already exists"
+    fi
+
+    # 3. Проверяем правило fwmark
+    if ! ip rule show | grep -q "fwmark 0x1 lookup wg0"; then
+        echo "Adding fwmark rule..."
+        ip rule add fwmark 0x1 lookup wg0 priority 100
+        echo "✓ Rule added"
+    else
+        echo "✓ Rule already exists"
+    fi
+
+
+    # 5. Проверяем правило маркировки
+    if ! nft list chain inet fw4 output 2>/dev/null | grep -q "ip daddr @vpnset"; then
+        echo "Adding marking rule..."
+        # Проверяем существование цепочки output
+        if ! nft list chain inet fw4 output 2>/dev/null | grep -q "chain output"; then
+            nft add chain inet fw4 output { type filter hook output priority 0 \; }
+        fi
+        nft add rule inet fw4 output ip daddr @vpnset meta mark set 0x1
+        echo "✓ Marking rule added"
+    else
+        echo "✓ Marking rule already exists"
+    fi
+
+    echo ""
+    echo "=== Verification ==="
+    echo ""
+    echo "Table wg0:"
+    ip route show table wg0
+    echo ""
+    echo "Rules:"
+    ip rule show | grep fwmark
+    echo ""
+    echo "vpnset elements:"
+    nft list set inet fw4 vpnset 2>/dev/null || echo "  (empty)"
+    echo ""
+    echo "=== Done ==="
+    echo ""
+    echo "To add IP to VPN routing:"
+    echo "  nft add element inet fw4 vpnset { 8.8.8.8 }"
+    echo ""
+    echo "To add a device IP to VPN:"
+    echo "  nft add element inet fw4 vpnset { 192.168.1.100 }"
+    echo ""
+    echo "To add a whole subnet:"
+    echo "  nft add element inet fw4 vpnset { 192.168.1.0/24 }"
+
+}
+
 echo "=========================================="
 echo "WireGuard Setup Script"
 echo "=========================================="
@@ -174,7 +293,8 @@ case "$choice" in
         ;;
     2)
         echo "Skipped"
-        
+        setup_dnsmasq
+        setup_route
         ;;
     3)
         echo "Skipped"

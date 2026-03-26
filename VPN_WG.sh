@@ -243,7 +243,8 @@ setup_dnsmasq() {
     # Создаем директорию для дополнительных конфигов (если её нет)
     mkdir -p /etc/dnsmasq.d
 
-    # 👉 ВАЖНО: добавляем nftset правило
+    # Настройка dnsmasq через UCI для использования nftset
+    uci set dhcp.@dnsmasq[0].nftset_support='1'
     uci add_list dhcp.@dnsmasq[0].confdir='/etc/dnsmasq.d'
 
     uci commit dhcp
@@ -262,26 +263,30 @@ setup_dnsmasq() {
 
 }
 
-setup_firewall_vpnset() {
+setup_nftables() {
 
-    # Проверяем есть ли уже
-    if ! uci show firewall | grep -q "vpnset"; then
-        echo "Creating vpnset (fw4)..."
+    cat > /etc/nftables.d/10-vpn-domains.nft << 'EOF'
+# Определяем таблицу inet vpn для изоляции наших правил
+# Это предотвратит конфликты с основной таблицей fw4
+table inet vpn_domains {
+    # Набор для хранения IP-адресов разрешенных доменов
+    set vpn_domains_set {
+        type ipv4_addr
+        flags interval, timeout
+        auto-merge
+        timeout 1h
+        # Принудительно создаем набор, даже если он пуст
+        elements = { }
+    }
 
-        uci add firewall ipset
-        uci set firewall.@ipset[-1].name='vpnset'
-        uci set firewall.@ipset[-1].family='ipv4'
-        uci set firewall.@ipset[-1].match='dest_ip'
-
-        uci commit firewall
-        /etc/init.d/firewall restart
-
-        echo "✓ vpnset created"
-    else
-        echo "✓ vpnset already exists"
-    fi
-
-    nft list sets inet fw4
+    # Цепочка для маркировки трафика
+    chain prerouting {
+        type filter hook prerouting priority filter; policy accept;
+        # Если пакет идет на IP из нашего набора, ставим метку (mark) 0x1
+        ip daddr @vpn_domains_set meta mark set 0x1
+    }
+}
+EOF
 }
 
 setup_route() {
@@ -354,6 +359,45 @@ setup_route() {
 
 }
 
+setup_bpr() {
+    # Включаем PBR
+    uci set pbr.config.enabled='1'
+    uci set pbr.config.verbosity='2'
+    uci set pbr.config.boot_delay='10'
+
+    # Указываем, что набор уже существует (не управляется PBR)
+    # Это критически важно, чтобы PBR не пытался удалить наш набор
+    uci set pbr.config.nft_file_support='0'
+
+    # Игнорируем wg интерфейс для предотвращения конфликтов
+    uci set pbr.config.ignored_interface='wg0'
+
+    # Создаем политику, ссылающуюся на наш существующий набор
+    echo "Введите вашу LAN подсеть (например, 192.168.1.0/24):"
+    echo "Подсеть можно узнать командой: ifconfig br-lan | grep inet"
+    echo ""
+    read -p "LAN подсеть: " LAN_SUBNET
+
+    # Проверяем, что ввели не пустую строку
+    if [ -z "$LAN_SUBNET" ]; then
+        echo "Ошибка: подсеть не может быть пустой!"
+        exit 1
+    fi
+
+    uci add pbr policy
+    uci set pbr.@policy[-1].name='vpn_by_domains'
+    uci set pbr.@policy[-1].src_addr="$LAN_SUBNET"  # Ваша LAN подсеть
+    uci set pbr.@policy[-1].nftset='vpn_domains_set'   # Имя набора из шага 2
+    uci set pbr.@policy[-1].interface='wg0'
+    uci set pbr.@policy[-1].enabled='1'
+
+    # Важно: указываем, что набор находится в таблице vpn_domains (а не fw4 по умолчанию)
+    uci set pbr.@policy[-1].nftset_table='vpn_domains'
+
+    uci commit pbr
+    /etc/init.d/pbr restart
+}
+
 echo "=========================================="
 echo "WireGuard Setup Script"
 echo "=========================================="
@@ -372,6 +416,8 @@ case "$choice" in
     2)
         echo "Skipped"
         setup_dnsmasq
+        setup_nftables
+        setup_bpr
         #setup_route
         ;;
     3)

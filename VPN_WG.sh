@@ -434,6 +434,47 @@ setup_route_delete() {
     echo "  nft add element inet fw4 vpnset { 192.168.1.0/24 }"
 
 }
+
+add_mark() {
+    # Проверяем и добавляем таблицу wg0 в rt_tables
+    if ! grep -q "^100\s*wg0" /etc/iproute2/rt_tables; then
+        echo '100     wg0' >> /etc/iproute2/rt_tables
+        echo "✓ Added 'wg0' table to rt_tables"
+    fi
+    
+    # Проверяем существование правила более точно
+    local rule_exists=0
+    for rule in $(uci show network | grep "=rule" | cut -d'=' -f1); do
+        if [ "$(uci get ${rule}.name 2>/dev/null)" = "mark0x1" ]; then
+            rule_exists=1
+            break
+        fi
+    done
+    
+    if [ $rule_exists -eq 0 ]; then
+        printf "\033[32;1mConfigure mark rule\033[0m\n"
+        uci add network rule
+        uci set network.@rule[-1].name='mark0x1'
+        uci set network.@rule[-1].mark='0x1'
+        uci set network.@rule[-1].priority='100'
+        uci set network.@rule[-1].lookup='wg0'
+        uci commit network
+        
+        # Применяем изменения
+        /etc/init.d/network reload
+        
+        echo "✓ Mark rule configured"
+        
+        # Показываем результат
+        echo ""
+        echo "Current rule:"
+        ip rule show | grep "fwmark 0x1"
+    else
+        echo "✓ Mark rule already exists"
+        ip rule show | grep "fwmark 0x1"
+    fi
+}
+
 setup_route() {
     cat > /etc/init.d/wg-vpn << 'EOF'
 #!/bin/sh /etc/rc.common
@@ -459,6 +500,80 @@ EOF
 chmod +x /etc/init.d/wg-vpn
 /etc/init.d/wg-vpn enable
 /etc/init.d/wg-vpn start
+}
+
+setup_uci_routing() {
+    # 1. Добавляем таблицу wg0 в rt_tables
+    if ! grep -q "^100\s*wg0" /etc/iproute2/rt_tables; then
+        echo '100     wg0' >> /etc/iproute2/rt_tables
+        echo "✓ Added 'wg0' table to rt_tables"
+    fi
+    
+    # 2. Настраиваем маршрут по умолчанию для wg0 через UCI
+    local route_exists=0
+    for route in $(uci show network | grep "=route" | cut -d'=' -f1); do
+        if [ "$(uci get ${route}.target 2>/dev/null)" = "0.0.0.0/0" ] && \
+           [ "$(uci get ${route}.device 2>/dev/null)" = "wg0" ]; then
+            route_exists=1
+            break
+        fi
+    done
+    
+    if [ $route_exists -eq 0 ]; then
+        echo "✓ Configuring default route for wg0..."
+        uci add network route
+        uci set network.@route[-1].interface='wg0'
+        uci set network.@route[-1].target='0.0.0.0/0'
+        uci set network.@route[-1].gateway='0.0.0.0'
+        uci set network.@route[-1].table='wg0'
+        uci commit network
+        echo "✓ Default route added to UCI"
+    else
+        echo "✓ Default route already exists in UCI"
+    fi
+    
+    # 3. Настраиваем правило fwmark через UCI
+    local rule_exists=0
+    for rule in $(uci show network | grep "=rule" | cut -d'=' -f1); do
+        if [ "$(uci get ${rule}.name 2>/dev/null)" = "wg0_mark" ]; then
+            rule_exists=1
+            break
+        fi
+    done
+    
+    if [ $rule_exists -eq 0 ]; then
+        echo "✓ Configuring fwmark rule..."
+        uci add network rule
+        uci set network.@rule[-1].name='wg0_mark'
+        uci set network.@rule[-1].mark='0x1'
+        uci set network.@rule[-1].priority='100'
+        uci set network.@rule[-1].lookup='wg0'
+        uci commit network
+        echo "✓ Fwmark rule added to UCI"
+    else
+        echo "✓ Fwmark rule already exists in UCI"
+    fi
+    
+    # 4. Применяем все изменения
+    echo ""
+    echo "Applying network configuration..."
+    /etc/init.d/network reload
+    
+    # 5. Показываем результат
+    echo ""
+    echo "=== Current UCI configuration ==="
+    echo "Routes:"
+    uci show network | grep "route" | grep "wg0"
+    echo ""
+    echo "Rules:"
+    uci show network | grep "rule" | grep "wg0"
+    echo ""
+    echo "=== Current active routing ==="
+    echo "Table wg0 routes:"
+    ip route show table wg0 2>/dev/null || echo "  No routes"
+    echo ""
+    echo "Fwmark rules:"
+    ip rule show | grep "fwmark 0x1" || echo "  No fwmark rule"
 }
 
 setup_bpr() {
@@ -532,7 +647,7 @@ case "$choice" in
         setup_dnsmasq
         
         #setup_bpr
-        setup_route
+        setup_uci_routing
         ;;
     3)
         echo "Skipped"

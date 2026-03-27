@@ -365,7 +365,7 @@ chmod +x /etc/init.d/vpn-domains
 /etc/init.d/vpn-domains start
 }
 
-setup_route() {
+setup_route_delete() {
 
     # Создать таблицу маршрутизации для wg0
     echo "100     wg0" >> /etc/iproute2/rt_tables
@@ -433,6 +433,32 @@ setup_route() {
     echo "To add a whole subnet:"
     echo "  nft add element inet fw4 vpnset { 192.168.1.0/24 }"
 
+}
+setup_route() {
+    cat > /etc/init.d/wg-vpn << 'EOF'
+#!/bin/sh /etc/rc.common
+START=20
+USE_PROCD=0
+
+start() {
+    # Добавление таблицы маршрутизации
+    grep -q "wg0" /etc/iproute2/rt_tables || echo "100 wg0" >> /etc/iproute2/rt_tables
+
+    # Маршрут по умолчанию через wg0
+    if ! ip route show table wg0 | grep -q default; then
+        ip route add default dev wg0 table wg0
+    fi
+
+    # Правило fwmark
+    if ! ip rule show | grep -q "fwmark 0x1 lookup wg0"; then
+        ip rule add fwmark 0x1 lookup wg0 priority 100
+    fi
+}
+EOF
+
+chmod +x /etc/init.d/wg-vpn
+/etc/init.d/wg-vpn enable
+/etc/init.d/wg-vpn start
 }
 
 setup_bpr() {

@@ -532,7 +532,7 @@ case "$choice" in
         setup_dnsmasq
         
         #setup_bpr
-        #setup_route
+        setup_route
         ;;
     3)
         echo "Skipped"

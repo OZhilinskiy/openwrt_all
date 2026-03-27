@@ -631,7 +631,7 @@ echo "=========================================="
 echo ""
 echo "  1. Configure WG for policy-based routing (split tunneling)"
 echo "  2. Route all traffic through WG"
-echo "  3. Skip"
+echo "  3. Добавить домены"
 echo ""
 read -r -p "Select option (1-3): " choice
 
@@ -651,7 +651,7 @@ case "$choice" in
         ;;
     3)
         echo "Skipped"
-        
+        add_getdomains
         ;;
     *)
         echo "Invalid option"

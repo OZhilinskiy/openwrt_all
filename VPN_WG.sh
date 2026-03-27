@@ -331,28 +331,38 @@ setup_dnsmasq() {
 
 setup_nftables() {
 
-    cat > /etc/nftables.d/10-vpn-domains.nft << 'EOF'
-# Определяем таблицу inet vpn для изоляции наших правил
-# Это предотвратит конфликты с основной таблицей fw4
-table inet vpn_domains {
-    # Набор для хранения IP-адресов разрешенных доменов
-    set vpn_domains_set {
-        type ipv4_addr
-        flags interval, timeout
-        auto-merge
-        timeout 1h
-        # Принудительно создаем набор, даже если он пуст
-        elements = { }
-    }
+cat > /etc/init.d/vpn-domains << 'EOF'
+#!/bin/sh /etc/rc.common
+START=99
 
-    # Цепочка для маркировки трафика
+start() {
+    # Создание таблицы и сета для dnsmasq nftset
+    cat > /etc/nftables.d/10-vpn-domains.nft << 'NFT'
+table inet fw4 {
+    set vpn_domains {
+    type ipv4_addr
+    flags interval, timeout
+    timeout 1h
+    auto-merge
+}
+
     chain prerouting {
         type filter hook prerouting priority filter; policy accept;
-        # Если пакет идет на IP из нашего набора, ставим метку (mark) 0x1
-        ip daddr @vpn_domains_set meta mark set 0x1
+        ip daddr @vpn_domains meta mark set 0x1
     }
 }
+NFT
+
+    nft -f /etc/nftables.d/10-vpn-domains.nft
+}
 EOF
+
+#Делаем скрипт исполняемым:
+chmod +x /etc/init.d/vpn-domains
+
+#Включаем автозапуск:
+/etc/init.d/vpn-domains enable
+/etc/init.d/vpn-domains start
 }
 
 setup_route() {
@@ -492,8 +502,9 @@ case "$choice" in
     2)
         echo "Skipped"
         add_getdomains
-        setup_dnsmasq
         setup_nftables
+        setup_dnsmasq
+        
         #setup_bpr
         #setup_route
         ;;

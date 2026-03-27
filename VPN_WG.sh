@@ -1,4 +1,75 @@
 #!/bin/sh
+add_getdomains() {
+    echo "Choose your country"
+    echo "1) Russia inside"
+    echo "2) Russia outside"
+    echo "3) Ukraine"
+    echo "4) Skip"
+
+    while true; do
+        read -r COUNTRY
+        case $COUNTRY in 
+        1) COUNTRY_URL="https://raw.githubusercontent.com/itdoginfo/allow-domains/main/Russia/inside-dnsmasq-nfset.lst"; break ;;
+        2) COUNTRY_URL="https://raw.githubusercontent.com/itdoginfo/allow-domains/main/Russia/outside-dnsmasq-nfset.lst"; break ;;
+        3) COUNTRY_URL="https://raw.githubusercontent.com/itdoginfo/allow-domains/main/Ukraine/inside-dnsmasq-nfset.lst"; break ;;
+        4) echo "Skipped"; return ;;
+        *) echo "Choose 1-4";;
+        esac
+    done
+
+    echo "Create script /etc/init.d/getdomains"
+
+cat << EOF > /etc/init.d/getdomains
+#!/bin/sh /etc/rc.common
+
+START=99
+USE_PROCD=1
+
+start_service() {
+    local count=0
+    local DOMAINS_URL="$COUNTRY_URL"
+    local TMP_FILE="/tmp/dnsmasq.d/domains.lst"
+
+    mkdir -p /tmp/dnsmasq.d
+
+    while true; do
+        if ping -c 1 -W 1 8.8.8.8 >/dev/null 2>&1; then
+            wget -qO "\$TMP_FILE" "\$DOMAINS_URL" && break
+        else
+            echo "Internet not available [\$count]"
+            count=\$((count+1))
+            sleep 5
+        fi
+    done
+
+    if dnsmasq --test --conf-file="\$TMP_FILE" 2>&1 | grep -q "syntax check OK"; then
+        echo "Config OK, restarting dnsmasq"
+        /etc/init.d/dnsmasq restart
+    else
+        echo "dnsmasq config error"
+    fi
+}
+EOF
+
+    chmod +x /etc/init.d/getdomains
+    /etc/init.d/getdomains enable
+
+    echo "Setup cron..."
+
+    # Включаем cron если выключен
+    /etc/init.d/cron enable
+    /etc/init.d/cron start
+
+    if crontab -l 2>/dev/null | grep -q getdomains; then
+        echo "Crontab already exists"
+    else
+        (crontab -l 2>/dev/null; echo "0 */8 * * * /etc/init.d/getdomains start") | crontab -
+        echo "Crontab added"
+    fi
+
+    echo "Start script"
+    /etc/init.d/getdomains start
+}
 
 setup_wg_client() {
 
@@ -226,29 +297,24 @@ setup_dnsmasq() {
         apk add dnsmasq-full || return 1
     fi
 
-    # Очистка старых настроек
-    uci delete dhcp.@dnsmasq[0].confdir 2>/dev/null
-    uci delete dhcp.@dnsmasq[0].nftset 2>/dev/null
+    # очистка
+    uci -q delete dhcp.@dnsmasq[0].confdir
+    uci -q delete dhcp.@dnsmasq[0].nftset
 
-     # 👉 ВАЖНО: удаляем ВСЕ существующие confdir
-    while uci -q delete dhcp.@dnsmasq[0].confdir; do
-        echo "Removing existing confdir entry"
-    done
-
-    # Базовые настройки
+    # базовые настройки
     uci set dhcp.@dnsmasq[0].resolvfile='/tmp/resolv.conf.d/resolv.conf.auto'
     uci set dhcp.@dnsmasq[0].localservice='1'
     uci set dhcp.@dnsmasq[0].nonwildcard='1'
 
-    # Создаем директорию для дополнительных конфигов (если её нет)
-    mkdir -p /etc/dnsmasq.d
+    # 🔥 включаем nftset
+    uci set dhcp.@dnsmasq[0].nftset='1'
 
-    # Настройка dnsmasq через UCI для использования nftset
-    uci set dhcp.@dnsmasq[0].nftset_support='1'
-    uci add_list dhcp.@dnsmasq[0].confdir='/etc/dnsmasq.d'
+    # используем твой файл
+    mkdir -p /tmp/dnsmasq.d
+    uci add_list dhcp.@dnsmasq[0].confdir='/tmp/dnsmasq.d'
 
     uci commit dhcp
-    # Запускаем dnsmasq
+
     /etc/init.d/dnsmasq restart
     
     # Ждем и проверяем статус
@@ -425,9 +491,10 @@ case "$choice" in
         ;;
     2)
         echo "Skipped"
+        add_getdomains
         setup_dnsmasq
         setup_nftables
-        setup_bpr
+        #setup_bpr
         #setup_route
         ;;
     3)

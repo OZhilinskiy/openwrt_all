@@ -162,6 +162,140 @@ echo "=== 8. Перезапускаем firewall и сеть ==="
 echo "=== Готово! Перезагрузи роутер и протестируй ==="
 }
 
+setup_wg_client() {
+
+    printf "\033[32;1mConfigure WireGuard\033[0m\n"
+
+    # --- Install packages ---
+    if ! apk info --installed wireguard-tools >/dev/null 2>&1; then
+        echo "Installing wireguard-tools..."
+        apk update
+        apk add wireguard-tools
+    else
+        echo "✓ WireGuard already installed"
+    fi
+
+    # luci-proto-wireguard may not exist in apk builds — skip silently
+    apk add luci-proto-wireguard 2>/dev/null
+
+    echo "Cleaning old configuration..."
+    uci -q delete network.wg0
+    uci -q delete network.@wireguard_wg0[0]
+    uci commit network
+
+    # --- Input private key ---
+    while true; do
+        read -r -p "Enter the private key (from [Interface]): " WG_PRIVATE_KEY
+        [ -n "$WG_PRIVATE_KEY" ] && break
+        echo "Private key cannot be empty."
+    done
+
+    # --- Input IP ---
+    while true; do
+        read -r -p "Enter internal IP address with subnet (e.g. 10.0.0.2/24): " WG_IP
+        echo "$WG_IP" | grep -qE '^([0-9]{1,3}\.){3}[0-9]{1,3}/[0-9]+$' && break
+        echo "Invalid format."
+    done
+
+    # --- Input public key ---
+    while true; do
+        read -r -p "Enter the public key (from [Peer]): " WG_PUBLIC_KEY
+        [ -n "$WG_PUBLIC_KEY" ] && break
+        echo "Public key cannot be empty."
+    done
+
+    # --- Optional preshared key ---
+    read -r -p "Enter PresharedKey (optional): " WG_PSK
+
+    # --- Endpoint host ---
+    while true; do
+        read -r -p "Enter Endpoint host (domain or IP): " WG_ENDPOINT
+        [ -n "$WG_ENDPOINT" ] && break
+        echo "Endpoint cannot be empty."
+    done
+
+    # --- Endpoint port ---
+    read -r -p "Enter Endpoint port [51820]: " WG_ENDPOINT_PORT
+    WG_ENDPOINT_PORT=${WG_ENDPOINT_PORT:-51820}
+
+    # --- DNS ---
+    read -r -p "Enter DNS servers [8.8.8.8 1.1.1.1]: " WG_DNS
+    WG_DNS=${WG_DNS:-"8.8.8.8 1.1.1.1"}
+
+    echo "Creating WireGuard interface..."
+
+    uci set network.wg0="interface"
+    uci set network.wg0.proto="wireguard"
+    uci set network.wg0.private_key="$WG_PRIVATE_KEY"
+    uci add_list network.wg0.addresses="$WG_IP"
+    uci set network.wg0.listen_port="51820"
+    uci set network.wg0.defaultroute="0"
+
+    for dns in $WG_DNS; do
+        uci add_list network.wg0.dns="$dns"
+    done
+
+    echo "Adding peer..."
+
+    uci add network wireguard_wg0
+    uci set network.@wireguard_wg0[-1].public_key="$WG_PUBLIC_KEY"
+    [ -n "$WG_PSK" ] && uci set network.@wireguard_wg0[-1].preshared_key="$WG_PSK"
+    uci set network.@wireguard_wg0[-1].endpoint_host="$WG_ENDPOINT"
+    uci set network.@wireguard_wg0[-1].endpoint_port="$WG_ENDPOINT_PORT"
+    uci set network.@wireguard_wg0[-1].persistent_keepalive="25"
+    uci add_list network.@wireguard_wg0[-1].allowed_ips="0.0.0.0/0"
+    uci set network.@wireguard_wg0[-1].route_allowed_ips="0"
+
+    uci commit network
+
+    echo "Configuring firewall..."
+
+    # Remove old wg0 zone
+    for i in $(uci show firewall | grep "=zone" | cut -d[ -f2 | cut -d] -f1); do
+        [ "$(uci -q get firewall.@zone[$i].name)" = "wg0" ] && uci delete firewall.@zone[$i]
+    done
+
+    # Create new zone
+    uci add firewall zone
+    uci set firewall.@zone[-1].name="wg0"
+    uci set firewall.@zone[-1].input="ACCEPT"
+    uci set firewall.@zone[-1].output="ACCEPT"
+    uci set firewall.@zone[-1].forward="ACCEPT"
+    uci set firewall.@zone[-1].masq="1"
+    uci add_list firewall.@zone[-1].network="wg0"
+
+    # LAN → WG0
+    uci add firewall forwarding
+    uci set firewall.@forwarding[-1].src="lan"
+    uci set firewall.@forwarding[-1].dest="wg0"
+
+    # WG0 → WAN
+    uci add firewall forwarding
+    uci set firewall.@forwarding[-1].src="wg0"
+    uci set firewall.@forwarding[-1].dest="wan"
+
+    uci commit firewall
+
+    echo "Restarting services..."
+    /etc/init.d/network restart
+    sleep 2
+    /etc/init.d/firewall restart
+
+    echo ""
+    echo "=========================================="
+    echo "WireGuard setup completed!"
+    echo "=========================================="
+    echo ""
+
+    echo "WireGuard status:"
+    wg show
+
+    echo ""
+    echo "Default route (should be WAN):"
+    ip route show | grep default
+}
+
+
 
 
 

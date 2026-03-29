@@ -96,7 +96,6 @@ EOF
     /etc/init.d/getdomains start
 }
 
-
 setup_route(){
 
 echo "=== 1. Enable dnsmasq nftset ==="
@@ -123,18 +122,18 @@ EOF
 
 echo "=== 4. Add UCI includes for fw4 ==="
 
-# include for set (table-post = after fw4 creates table)
+# include for set (must be table 'fw4', not table-post)
 uci add firewall include
 uci set firewall.@include[-1].type='nftables'
 uci set firewall.@include[-1].path='/etc/nft-vpn-set.nft'
-uci set firewall.@include[-1].position='table-post'
+uci set firewall.@include[-1].table='fw4'
 
-# include for marking (chain-pre = before fw4 inserts rules)
+# include for marking (must be chain 'prerouting')
 uci add firewall include
 uci set firewall.@include[-1].type='nftables'
 uci set firewall.@include[-1].path='/etc/nft-vpn-mark.nft'
-uci set firewall.@include[-1].position='chain-pre'
-uci set firewall.@include[-1].chain='mangle_prerouting'
+uci set firewall.@include[-1].chain='prerouting'
+uci set firewall.@include[-1].table='fw4'
 
 uci commit firewall
 
@@ -164,6 +163,7 @@ echo "=== DONE ==="
 echo "Reboot recommended."
 
 }
+
 
 setup_wg_client() {
 

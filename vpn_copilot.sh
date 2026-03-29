@@ -16,8 +16,6 @@ fi
 # nftables (обычно уже есть)
 apk add nftables
 
-# iproute2-full нужен для ip rule / ip route table
-apk add iproute2
 }
 
 add_getdomains() {
@@ -293,6 +291,10 @@ setup_wg_client() {
     echo ""
     echo "Default route (should be WAN):"
     ip route show | grep default
+    sleep 3
+    /etc/init.d/uhttpd restart
+    sleep 3
+
 }
 
 
@@ -329,6 +331,7 @@ case "$choice" in
         ;;
     4)
         install_apk
+        setup_route
         ;;
     *)
         echo "Invalid option"

@@ -99,65 +99,70 @@ EOF
 
 setup_route(){
 
-echo "=== 1. Включаем поддержку кастомных nft-файлов ==="
-uci set firewall.@defaults[0].include_config='1'
-uci commit firewall
-
-echo "=== 2. Настраиваем dnsmasq для nftset ==="
+echo "=== 1. Enable dnsmasq nftset ==="
 mkdir -p /etc/dnsmasq.d
 uci set dhcp.@dnsmasq[0].nftset='1'
 uci add_list dhcp.@dnsmasq[0].confdir='/etc/dnsmasq.d'
 uci commit dhcp
 /etc/init.d/dnsmasq restart
 
-echo "=== 3. Создаём nft-набор vpn_domains ==="
-cat > /etc/nftables.d/90-vpnset.nft << 'EOF'
-table inet fw4 {
-    set vpn_domains {
-        type ipv4_addr
-        flags interval, timeout
-        timeout 1h
-        auto-merge
-    }
+echo "=== 2. Create nft set definition ==="
+cat > /etc/nft-vpn-set.nft << 'EOF'
+set vpn_domains {
+    type ipv4_addr
+    flags interval, timeout
+    timeout 1h
+    auto-merge
 }
 EOF
 
-echo "=== 4. Добавляем правила маркировки трафика ==="
-cat > /etc/nftables.d/91-vpn-mark.nft << 'EOF'
-table inet fw4 {
-    chain mangle_output {
-        ip daddr @vpn_domains meta mark set 0x1
-    }
-
-    chain mangle_prerouting {
-        ip daddr @vpn_domains meta mark set 0x1
-    }
-}
+echo "=== 3. Create nft mark rules ==="
+cat > /etc/nft-vpn-mark.nft << 'EOF'
+ip daddr @vpn_domains meta mark set 0x1
 EOF
 
-echo "=== 5. Добавляем таблицу маршрутизации ==="
+echo "=== 4. Add UCI includes for fw4 ==="
+
+# include for set (table-post = after fw4 creates table)
+uci add firewall include
+uci set firewall.@include[-1].type='nftables'
+uci set firewall.@include[-1].path='/etc/nft-vpn-set.nft'
+uci set firewall.@include[-1].position='table-post'
+
+# include for marking (chain-pre = before fw4 inserts rules)
+uci add firewall include
+uci set firewall.@include[-1].type='nftables'
+uci set firewall.@include[-1].path='/etc/nft-vpn-mark.nft'
+uci set firewall.@include[-1].position='chain-pre'
+uci set firewall.@include[-1].chain='mangle_prerouting'
+
+uci commit firewall
+
+echo "=== 5. Add routing table ==="
 grep -q "^100 vpn" /etc/iproute2/rt_tables || echo "100 vpn" >> /etc/iproute2/rt_tables
 
-echo "=== 6. Создаём постоянный маршрут через wg0 ==="
+echo "=== 6. Add static route via wg0 ==="
 uci add network route
 uci set network.@route[-1].interface='wg0'
 uci set network.@route[-1].target='0.0.0.0/0'
 uci set network.@route[-1].table='100'
 uci commit network
 
-echo "=== 7. Создаём постоянное правило fwmark ==="
+echo "=== 7. Add fwmark rule ==="
 uci add network rule
-uci set network.@rule[-1].name='vpn_traffic'
+uci set network.@rule[-1].name='vpn_mark'
 uci set network.@rule[-1].mark='0x1'
 uci set network.@rule[-1].priority='100'
 uci set network.@rule[-1].lookup='100'
 uci commit network
 
-echo "=== 8. Перезапускаем firewall и сеть ==="
+echo "=== 8. Restart firewall and network ==="
 /etc/init.d/firewall restart
 /etc/init.d/network restart
 
-echo "=== Готово! Перезагрузи роутер и протестируй ==="
+echo "=== DONE ==="
+echo "Reboot recommended."
+
 }
 
 setup_wg_client() {

@@ -82,7 +82,7 @@ nslookup yandex.ru
 nft list set inet fw4 vpn_domains | grep -E '[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+'
 
 # 4. Получаем IP yandex
-YANDEX_IP=$(nslookup yandex.ru 127.0.0.1 | grep "Address 1" | tail -1 | awk '{print $3}')
+YANDEX_IP=$(nslookup youtube.com 127.0.0.1 | grep "Address 1" | tail -1 | awk '{print $3}')
 
 # 5. Проверяем маршрут
 ip route get $YANDEX_IP

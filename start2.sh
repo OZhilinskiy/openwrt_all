@@ -342,7 +342,7 @@ case "$choice" in
         echo ""
         add_getdomains
         setup_wg_client
-        Setup_VPN_SPLIT
+        #Setup_VPN_SPLIT
         ;;
     2)
         echo "Skipped"

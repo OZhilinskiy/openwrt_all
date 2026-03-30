@@ -126,14 +126,14 @@ echo "=== 4. Add UCI includes for fw4 ==="
 uci add firewall include
 uci set firewall.@include[-1].type='nftables'
 uci set firewall.@include[-1].path='/etc/nft-vpn-set.nft'
-uci set firewall.@include[-1].table='fw4'
+uci commit firewall
+
 
 # include for marking (must be chain 'prerouting')
 uci add firewall include
 uci set firewall.@include[-1].type='nftables'
 uci set firewall.@include[-1].path='/etc/nft-vpn-mark.nft'
-uci set firewall.@include[-1].chain='prerouting'
-uci set firewall.@include[-1].table='fw4'
+uci set firewall.@include[-1].position='prerouting'
 
 uci commit firewall
 
@@ -161,6 +161,41 @@ echo "=== 8. Restart firewall and network ==="
 
 echo "=== DONE ==="
 echo "Reboot recommended."
+
+}
+
+setup_pbr(){
+    apk update
+    apk add pbr luci-app-pbr
+
+    #2. Создать файл со списком доменов
+    mkdir -p /etc/pbr
+    cat << 'EOF' > /etc/pbr/domains.lst
+    youtube.com
+    netflix.com
+    EOF
+
+    #3. Включить DNS‑prefetch в конфиге PBR
+    #Полностью заменить конфиг:
+
+cat << 'EOF' > /etc/config/pbr
+config pbr 'config'
+    option enabled '1'
+    option verbosity '1'
+    option strict_enforcement '1'
+    option resolver_set 'dnsmasq.nftset'
+    option resolver_prio '0'
+    option dns_prefetch '1'
+    option dns_file '/etc/pbr/domains.lst'
+    option ipv6_enabled '0'
+
+config policy
+    option name 'domains_vpn'
+    option interface 'wg0'
+    option dest_addr 'pbr.user.dnsprefetch'
+EOF
+
+/etc/init.d/pbr restart
 
 }
 
@@ -332,11 +367,11 @@ case "$choice" in
         setup_uci_routing
         ;;
     3)
-        add_getdomains
+        #add_getdomains
         ;;
     4)
         install_apk
-        setup_route
+        setup_pbr
         ;;
     *)
         echo "Invalid option"

@@ -192,7 +192,7 @@ config pbr 'config'
 config policy
     option name 'domains_vpn'
     option interface 'wg0'
-    option dest_addr 'pbr.user.dnsprefetch'
+    option dest_addr 'pbr.dnsprefetch'
 EOF
 
 /etc/init.d/pbr restart
@@ -367,7 +367,7 @@ case "$choice" in
         setup_uci_routing
         ;;
     3)
-        #add_getdomains
+        add_getdomains
         ;;
     4)
         install_apk

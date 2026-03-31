@@ -19,6 +19,113 @@ apk add nftables
 }
 
 add_getdomains() {
+
+    echo "Choose your country"
+    echo "1) Russia inside"
+    echo "2) Russia outside"
+    echo "3) Ukraine"
+    echo "4) Skip"
+
+    while true; do
+        read -r COUNTRY
+        case $COUNTRY in 
+        1) COUNTRY_URL="https://raw.githubusercontent.com/itdoginfo/allow-domains/main/Russia/inside-dnsmasq-nfset.lst"; break ;;
+        2) COUNTRY_URL="https://raw.githubusercontent.com/itdoginfo/allow-domains/main/Russia/outside-dnsmasq-nfset.lst"; break ;;
+        3) COUNTRY_URL="https://raw.githubusercontent.com/itdoginfo/allow-domains/main/Ukraine/inside-dnsmasq-nfset.lst"; break ;;
+        4) echo "Skipped"; return ;;
+        *) echo "Choose 1-4";;
+        esac
+    done
+
+    echo "Saving URL..."
+    echo "$COUNTRY_URL" > /etc/getdomains.url
+
+    echo "Creating dnsmasq directory..."
+    mkdir -p /etc/dnsmasq.d
+
+    echo "Creating /etc/init.d/getdomains..."
+
+cat << 'EOF' > /etc/init.d/getdomains
+#!/bin/sh /etc/rc.common
+
+START=99
+USE_PROCD=1
+
+DOMAINS_URL_FILE="/etc/getdomains.url"
+CONF_DIR="/etc/dnsmasq.d"
+TMP_FILE="$CONF_DIR/domains.lst"
+CUSTOM_FILE="$CONF_DIR/domains.custom"
+
+start_service() {
+
+    if [ ! -f "$DOMAINS_URL_FILE" ]; then
+        echo "No URL file found: $DOMAINS_URL_FILE"
+        return 1
+    fi
+
+    DOMAINS_URL="$(cat "$DOMAINS_URL_FILE")"
+
+    mkdir -p "$CONF_DIR"
+
+    echo "Downloading domain list from: $DOMAINS_URL"
+
+    count=0
+    while true; do
+        if ping -c 1 -W 1 8.8.8.8 >/dev/null 2>&1; then
+            if wget -qO "$TMP_FILE" "$DOMAINS_URL"; then
+                echo "Download OK"
+                break
+            else
+                echo "Download failed, retrying..."
+            fi
+        else
+            echo "Internet not available [$count]"
+        fi
+        count=$((count+1))
+        sleep 5
+    done
+
+    if [ ! -s "$TMP_FILE" ]; then
+        echo "Downloaded file is EMPTY — aborting"
+        return 1
+    fi
+
+    cp "$TMP_FILE" "$CUSTOM_FILE"
+
+    if dnsmasq --test >/dev/null 2>&1; then
+        echo "dnsmasq config OK — restarting"
+        /etc/init.d/dnsmasq restart
+    else
+        echo "dnsmasq config ERROR — reverting"
+        rm -f "$CUSTOM_FILE"
+        return 1
+    fi
+
+    echo "Domain list updated successfully"
+}
+EOF
+
+    chmod +x /etc/init.d/getdomains
+    /etc/init.d/getdomains enable
+
+    echo "Setting up cron..."
+    /etc/init.d/cron enable
+    /etc/init.d/cron start
+
+    if ! crontab -l 2>/dev/null | grep -q getdomains; then
+        (crontab -l 2>/dev/null; echo "0 */8 * * * /etc/init.d/getdomains start") | crontab -
+        echo "Crontab added"
+    else
+        echo "Crontab already exists"
+    fi
+
+    echo "Running initial update..."
+    /etc/init.d/getdomains start
+
+    echo "Done!"
+}
+
+add_getdomains_old() {
     echo "Choose your country"
     echo "1) Russia inside"
     echo "2) Russia outside"

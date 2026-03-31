@@ -114,6 +114,7 @@ echo "100 vpn" >> /etc/iproute2/rt_tables
 #uci commit network
 
 /etc/init.d/network restart
+sleep 5
 #5. Делаем настройки постоянными через UCI-----------------------------------------------
 
 # Сохраняем маршрут

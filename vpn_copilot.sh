@@ -29,9 +29,9 @@ add_getdomains() {
     while true; do
         read -r COUNTRY
         case $COUNTRY in 
-        1) COUNTRY_URL="https://raw.githubusercontent.com/itdoginfo/allow-domains/main/Russia/inside-dnsmasq-nfset.lst"; break ;;
-        2) COUNTRY_URL="https://raw.githubusercontent.com/itdoginfo/allow-domains/main/Russia/outside-dnsmasq-nfset.lst"; break ;;
-        3) COUNTRY_URL="https://raw.githubusercontent.com/itdoginfo/allow-domains/main/Ukraine/inside-dnsmasq-nfset.lst"; break ;;
+        1) COUNTRY_URL="https://raw.githubusercontent.com/itdoginfo/allow-domains/main/Russia/inside-raw.lst"; break ;;
+        2) COUNTRY_URL="https://raw.githubusercontent.com/itdoginfo/allow-domains/main/Russia/outside-raw.lst"; break ;;
+        3) COUNTRY_URL="https://raw.githubusercontent.com/itdoginfo/allow-domains/main/Ukraine/inside-raw.lst"; break ;;
         4) echo "Skipped"; return ;;
         *) echo "Choose 1-4";;
         esac
@@ -40,8 +40,9 @@ add_getdomains() {
     echo "Saving URL..."
     echo "$COUNTRY_URL" > /etc/getdomains.url
 
-    echo "Creating dnsmasq directory..."
+    echo "Preparing directories..."
     mkdir -p /etc/dnsmasq.d
+    touch /etc/dnsmasq.d/domains.custom
 
     echo "Creating /etc/init.d/getdomains..."
 
@@ -54,7 +55,9 @@ USE_PROCD=1
 DOMAINS_URL_FILE="/etc/getdomains.url"
 CONF_DIR="/etc/dnsmasq.d"
 TMP_FILE="$CONF_DIR/domains.lst"
-CUSTOM_FILE="$CONF_DIR/domains.custom"
+CUSTOM_DOMAINS="$CONF_DIR/domains.custom"
+MERGED_FILE="$CONF_DIR/domains.merged"
+FINAL_FILE="$CONF_DIR/domains.final"
 
 start_service() {
 
@@ -69,35 +72,63 @@ start_service() {
 
     echo "Downloading domain list from: $DOMAINS_URL"
 
-    count=0
-    while true; do
+    attempts=0
+    max_attempts=5
+
+    while [ $attempts -lt $max_attempts ]; do
         if ping -c 1 -W 1 8.8.8.8 >/dev/null 2>&1; then
             if wget -qO "$TMP_FILE" "$DOMAINS_URL"; then
                 echo "Download OK"
                 break
             else
-                echo "Download failed, retrying..."
+                echo "Download failed (attempt $attempts)"
             fi
         else
-            echo "Internet not available [$count]"
+            echo "Internet not available (attempt $attempts)"
         fi
-        count=$((count+1))
+
+        attempts=$((attempts+1))
         sleep 5
     done
+
+    if [ $attempts -ge $max_attempts ]; then
+        echo "Failed to download after $max_attempts attempts — aborting"
+        return 1
+    fi
 
     if [ ! -s "$TMP_FILE" ]; then
         echo "Downloaded file is EMPTY — aborting"
         return 1
     fi
 
-    cp "$TMP_FILE" "$CUSTOM_FILE"
+    echo "Merging domain lists..."
+
+    cat "$TMP_FILE" > "$MERGED_FILE"
+
+    if [ -f "$CUSTOM_DOMAINS" ]; then
+        cat "$CUSTOM_DOMAINS" >> "$MERGED_FILE"
+    fi
+
+    sed -i '/^$/d' "$MERGED_FILE"
+
+    sort -u "$MERGED_FILE" -o "$MERGED_FILE"
+
+    echo "Building final dnsmasq file..."
+
+    rm -f "$FINAL_FILE"
+
+    while read -r domain; do
+        [ -z "$domain" ] && continue
+        echo "nftset=/$domain/inet/fw4/vpn_domains" >> "$FINAL_FILE"
+    done < "$MERGED_FILE"
+
+    echo "Checking dnsmasq config..."
 
     if dnsmasq --test >/dev/null 2>&1; then
         echo "dnsmasq config OK — restarting"
         /etc/init.d/dnsmasq restart
     else
-        echo "dnsmasq config ERROR — reverting"
-        rm -f "$CUSTOM_FILE"
+        echo "dnsmasq config ERROR — aborting"
         return 1
     fi
 
@@ -124,6 +155,7 @@ EOF
 
     echo "Done!"
 }
+
 
 add_getdomains_old() {
     echo "Choose your country"

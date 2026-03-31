@@ -137,7 +137,7 @@ uci commit network
 nft list set inet fw4 vpn_domains
 
 # 2. Запрашиваем домен (должен добавиться IP в набор)
-nslookup yandex.ru
+nslookup youtube.com
 
 # 3. Проверяем что IP добавился в набор
 nft list set inet fw4 vpn_domains | grep -E '[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+'

@@ -235,7 +235,7 @@ EOF
     /etc/init.d/getdomains start
 }
 
-setup_route(){
+setup_route_work_old(){
 
 echo "=== 1. Enable dnsmasq nftset ==="
 mkdir -p /etc/dnsmasq.d

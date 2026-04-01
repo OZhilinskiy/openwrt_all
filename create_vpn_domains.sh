@@ -3,13 +3,16 @@ create_vpn_domains() {
     local REMOTE_FILE="$DOMAINS_DIR/domains.list"
     local CUSTOM_FILE="$DOMAINS_DIR/domains.custom"
     local FINAL_FILE="$DOMAINS_DIR/domains.final"
+    local DNSMASQ_DIR="/etc/dnsmasq.d"
+    local DNSMASQ_FILE="$DNSMASQ_DIR/vpn_domains.conf"
     local URL="https://raw.githubusercontent.com/itdoginfo/allow-domains/main/Russia/inside-dnsmasq-nfset.lst"
     local MAX_RETRIES=5
     local RETRY_DELAY=3
     local attempt=1
     
-    # Создаем директорию
+    # Создаем директории
     mkdir -p "$DOMAINS_DIR"
+    mkdir -p "$DNSMASQ_DIR"
     
     echo "=========================================="
     echo "Настройка VPN доменов"
@@ -58,14 +61,14 @@ EOF
         # Проверяем интернет и скачиваем
         if command -v wget >/dev/null 2>&1; then
             if wget -q -O "$REMOTE_FILE" "$URL" 2>/dev/null && [ -s "$REMOTE_FILE" ]; then
-                echo "  ✓ Удачный загрузка"
+                echo "  ✓ Удачная загрузка"
                 break
             else
                 echo "  ✗ Ошибка загрузки"
             fi
         elif command -v curl >/dev/null 2>&1; then
             if curl -s -o "$REMOTE_FILE" "$URL" 2>/dev/null && [ -s "$REMOTE_FILE" ]; then
-                echo "  ✓ Удачный загрузка"
+                echo "  ✓ Удачная загрузка"
                 break
             else
                 echo "  ✗ Ошибка загрузки"
@@ -195,15 +198,91 @@ EOF
         return 1
     fi
     
-    # 6. Выводим информацию
+    # 6. Переносим файл в dnsmasq
+    echo ""
+    echo "Перенос файла в dnsmasq..."
+    
+    if [ -s "$FINAL_FILE" ]; then
+        cp "$FINAL_FILE" "$DNSMASQ_FILE"
+        echo "✓ Файл скопирован: $DNSMASQ_FILE"
+        
+        # Проверяем права доступа
+        chmod 644 "$DNSMASQ_FILE"
+        
+        # Проверяем владельца
+        if command -v chown >/dev/null 2>&1; then
+            chown root:root "$DNSMASQ_FILE" 2>/dev/null || true
+        fi
+    else
+        echo "✗ Ошибка: итоговый файл пуст, не могу скопировать"
+        return 1
+    fi
+    
+    # 7. Проверяем конфигурацию dnsmasq и перезапускаем
+    echo ""
+    echo "Проверка конфигурации dnsmasq..."
+    
+    if command -v dnsmasq >/dev/null 2>&1; then
+        # Проверяем синтаксис
+        if dnsmasq --test 2>/dev/null; then
+            echo "✓ Конфигурация dnsmasq корректна"
+            
+            # Перезапускаем dnsmasq в зависимости от системы
+            echo "Перезапуск dnsmasq..."
+            
+            if command -v systemctl >/dev/null 2>&1; then
+                # systemd
+                if systemctl restart dnsmasq 2>/dev/null; then
+                    echo "✓ dnsmasq перезапущен (systemctl)"
+                else
+                    echo "⚠ Не удалось перезапустить через systemctl, пробуем service..."
+                    service dnsmasq restart 2>/dev/null || true
+                fi
+            elif command -v service >/dev/null 2>&1; then
+                # sysvinit
+                service dnsmasq restart 2>/dev/null && echo "✓ dnsmasq перезапущен (service)"
+            elif [ -f "/etc/init.d/dnsmasq" ]; then
+                # OpenWrt/LEDE
+                /etc/init.d/dnsmasq restart 2>/dev/null && echo "✓ dnsmasq перезапущен (init.d)"
+            else
+                echo "⚠ Не найден способ перезапуска dnsmasq, попробуйте вручную:"
+                echo "  systemctl restart dnsmasq  # для systemd"
+                echo "  service dnsmasq restart    # для sysvinit"
+                echo "  /etc/init.d/dnsmasq restart # для OpenWrt"
+            fi
+            
+            # Проверяем статус
+            sleep 1
+            if command -v pgrep >/dev/null 2>&1; then
+                if pgrep dnsmasq >/dev/null 2>&1; then
+                    echo "✓ dnsmasq работает"
+                else
+                    echo "⚠ Внимание: dnsmasq не запущен"
+                fi
+            fi
+        else
+            echo "✗ Ошибка: неверный синтаксис конфигурации dnsmasq!"
+            echo "  Проверьте файл: $DNSMASQ_FILE"
+            echo "  Запустите для диагностики: dnsmasq --test"
+            return 1
+        fi
+    else
+        echo "⚠ Внимание: dnsmasq не установлен"
+        echo "  Установите dnsmasq командой:"
+        echo "    apt install dnsmasq    # для Debian/Ubuntu"
+        echo "    opkg install dnsmasq   # для OpenWrt"
+    fi
+    
+    # 8. Выводим информацию
     echo ""
     echo "=========================================="
     echo "Готово!"
     echo "=========================================="
-    echo "Файлы находятся в: $DOMAINS_DIR"
-    echo "  domains.list    - загруженный удаленный список"
-    echo "  domains.custom  - ваш ручной список (редактируйте здесь)"
-    echo "  domains.final   - итоговый объединенный список без дубликатов"
+    echo "Файлы находятся в:"
+    echo "  $DOMAINS_DIR/domains.list    - загруженный удаленный список"
+    echo "  $DOMAINS_DIR/domains.custom  - ваш ручной список (редактируйте здесь)"
+    echo "  $DOMAINS_DIR/domains.final   - итоговый объединенный список"
+    echo "  $DNSMASQ_FILE                - активный файл для dnsmasq"
     echo ""
     echo "Для добавления своих доменов:"
     echo "  echo \"example.com\" >> $CUSTOM_FILE"
@@ -211,12 +290,16 @@ EOF
     echo "  # затем запустите скрипт снова"
     echo ""
     echo "Для просмотра итогового списка:"
-    echo "  cat $FINAL_FILE | head -20"
-    echo "  wc -l $FINAL_FILE"
+    echo "  cat $DNSMASQ_FILE | head -20"
+    echo "  wc -l $DNSMASQ_FILE"
+    echo ""
+    echo "Для проверки статуса dnsmasq:"
+    echo "  systemctl status dnsmasq     # для systemd"
+    echo "  service dnsmasq status       # для sysvinit"
+    echo "  /etc/init.d/dnsmasq status   # для OpenWrt"
     echo "=========================================="
     
     return 0
 }
-
 
 create_vpn_domains

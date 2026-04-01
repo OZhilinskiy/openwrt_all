@@ -457,6 +457,11 @@ setup_wg_client() {
     /etc/init.d/network restart
     sleep 2
     /etc/init.d/firewall restart
+    
+    #обновляем LUCI, чтобы появился раздел WG
+    /etc/init.d/rpcd restart
+    /etc/init.d/uhttpd restart
+
 
     echo ""
     echo "=========================================="

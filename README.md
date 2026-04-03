@@ -14,3 +14,10 @@ chmod +x wireguard-install.sh
 
 # Run it
 ./wireguard-install.sh
+
+
+# Скрипт от пользователя 0xevn (актуальная версия)
+git clone https://github.com/0xevn/xray-reality-setup.git
+cd xray-reality-setup
+chmod +x xray-setup.sh
+sudo bash xray-setup.sh

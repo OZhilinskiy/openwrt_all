@@ -203,19 +203,17 @@ else
     printf "\033[32;1mInstalled dnscrypt-proxy2\033[0m\n"
     apk update
     apk add dnscrypt-proxy2
-    if grep -q "# server_names" /etc/dnscrypt-proxy2/dnscrypt-proxy.toml; then
-        sed -i "s/^# server_names =.*/server_names = ['google', 'cloudflare', 'scaleway-fr', 'yandex']/g" /etc/dnscrypt-proxy2/dnscrypt-proxy.toml
-    fi
+    # Редактируем /etc/dnscrypt-proxy2/dnscrypt-proxy.toml
+    sed -i 's/^listen_addresses = .*/listen_addresses = ["127.0.0.1:5353"]/' /etc/dnscrypt-proxy2/dnscrypt-proxy.toml
+    sed -i 's/^# server_names =.*/server_names = ["cloudflare", "google"]/' /etc/dnscrypt-proxy2/dnscrypt-proxy.toml
 
-    printf "\033[32;1mDNSCrypt restart\033[0m\n"
-    service dnscrypt-proxy restart
-    printf "\033[32;1mDNSCrypt needs to load the relays list. Please wait\033[0m\n"
+    /etc/init.d/dnscrypt-proxy restart
     sleep 30
 
     if [ -f /etc/dnscrypt-proxy2/relays.md ]; then
         uci set dhcp.@dnsmasq[0].noresolv="1"
         uci -q delete dhcp.@dnsmasq[0].server
-        uci add_list dhcp.@dnsmasq[0].server="127.0.0.53#53"
+        uci add_list dhcp.@dnsmasq[0].server="127.0.0.1#5353"
         uci add_list dhcp.@dnsmasq[0].server='/use-application-dns.net/'
         uci commit dhcp
         
@@ -228,7 +226,7 @@ else
 fi
 }
 
-configure_dnscrypt
+#configure_dnscrypt
 
 update_domain_list() {
     cat > /usr/bin/vpn-domains-update << 'EOF'

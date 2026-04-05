@@ -224,90 +224,184 @@ fi
 configure_dnscrypt
 
 update_domain_list() {
-cat > /usr/bin/vpn-domains-update << 'EOF'
+    cat > /usr/bin/vpn-domains-update << 'EOF'
 #!/bin/sh
 
-update_vpn_domains() {
-    local DIR="/etc/vpn_domains"
-    local LIST="$DIR/domains.list"
-    local CUSTOM="$DIR/domains.custom"
-    local OUTPUT="$DIR/domains.conf"
+create_vpn_domains() {
+    local DOMAINS_DIR="/etc/vpn_custom_domains"
+    local REMOTE_FILE="$DOMAINS_DIR/domains.list"
+    local CUSTOM_FILE="$DOMAINS_DIR/domains.custom"
+    local FINAL_FILE="$DOMAINS_DIR/domains.final"
+    local DNSMASQ_DIR="/etc/dnsmasq.d"
+    local DNSMASQ_FILE="$DNSMASQ_DIR/vpn_domains.conf"
     local URL="https://raw.githubusercontent.com/itdoginfo/allow-domains/main/Russia/inside-dnsmasq-nfset.lst"
+    local MAX_RETRIES=3
+    local RETRY_DELAY=3
+    local attempt=1
     
-    mkdir -p "$DIR"
+    mkdir -p "$DOMAINS_DIR"
+    mkdir -p "$DNSMASQ_DIR"
     
-    echo "[$(date '+%H:%M:%S')] Начинаю обновление..."
+    echo "=========================================="
+    echo "VPN Domains Update - $(date '+%Y-%m-%d %H:%M:%S')"
+    echo "=========================================="
     
-    # Создаем файл для ручных доменов если нет
-    if [ ! -f "$CUSTOM" ]; then
-        echo "# Добавьте свои домены (по одному на строку)" > "$CUSTOM"
-        echo "example.com" >> "$CUSTOM"
-        echo "Создан файл для ручных доменов: $CUSTOM"
+    # Создаем файл для ручных доменов
+    if [ ! -f "$CUSTOM_FILE" ]; then
+        echo "Creating custom domains file: $CUSTOM_FILE"
+        printf '# Manual domains for VPN\n# One domain per line\nexample.com\n' > "$CUSTOM_FILE"
+        echo "✓ Created"
     fi
     
     # Скачиваем список
-    echo "Скачиваю список..."
-    wget -q -O "$LIST" "$URL" 2>/dev/null
+    echo ""
+    echo "Downloading remote domain list..."
     
-    if [ ! -s "$LIST" ]; then
-        echo "Ошибка: не удалось скачать список"
-        rm -f "$LIST"
+    while [ $attempt -le $MAX_RETRIES ]; do
+        echo "  Attempt $attempt of $MAX_RETRIES..."
+        
+        if wget -q -O "$REMOTE_FILE" "$URL" 2>/dev/null && [ -s "$REMOTE_FILE" ]; then
+            echo "  ✓ Download successful"
+            break
+        else
+            echo "  ✗ Download failed"
+        fi
+        
+        if [ $attempt -lt $MAX_RETRIES ]; then
+            echo "  Retry in $RETRY_DELAY seconds..."
+            sleep $RETRY_DELAY
+        fi
+        attempt=$((attempt + 1))
+    done
+    
+    if [ -f "$REMOTE_FILE" ] && [ -s "$REMOTE_FILE" ]; then
+        remote_lines=$(wc -l < "$REMOTE_FILE")
+        echo "  Downloaded: $remote_lines lines"
+    else
+        echo "  ⚠ Using only custom domains"
+        rm -f "$REMOTE_FILE"
+    fi
+    
+    # Формируем итоговый файл
+    echo ""
+    echo "Building final domain list..."
+    > "$FINAL_FILE"
+    
+    # Добавляем ручные домены
+    if [ -f "$CUSTOM_FILE" ]; then
+        custom_count=0
+        while IFS= read -r line; do
+            # Пропускаем пустые строки и комментарии
+            [ -z "$line" ] && continue
+            echo "$line" | grep -q '^[[:space:]]*#' && continue
+            
+            # Убираем пробелы
+            line=$(echo "$line" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+            
+            # Простой домен
+            if echo "$line" | grep -qE '^[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$'; then
+                echo "nftset=/$line/4#inet#fw4#vpn_domains" >> "$FINAL_FILE"
+                custom_count=$((custom_count + 1))
+            fi
+        done < "$CUSTOM_FILE"
+        echo "  Custom domains: $custom_count"
+    fi
+    
+    # Добавляем удаленные домены
+    if [ -f "$REMOTE_FILE" ] && [ -s "$REMOTE_FILE" ]; then
+        remote_count=0
+        while IFS= read -r line; do
+            if echo "$line" | grep -q '^nftset=/'; then
+                echo "$line" >> "$FINAL_FILE"
+                remote_count=$((remote_count + 1))
+            fi
+        done < "$REMOTE_FILE"
+        echo "  Remote domains: $remote_count"
+    fi
+    
+    # Удаляем дубликаты
+    if [ -s "$FINAL_FILE" ]; then
+        sort -t'/' -k2,2 -u "$FINAL_FILE" > "${FINAL_FILE}.tmp"
+        mv "${FINAL_FILE}.tmp" "$FINAL_FILE"
+        
+        final_count=$(wc -l < "$FINAL_FILE")
+        echo ""
+        echo "✓ Total unique domains: $final_count"
+    else
+        echo "✗ Error: No domains to process"
         return 1
     fi
     
-    echo "Скачано $(wc -l < "$LIST") строк"
+    # Копируем в dnsmasq
+    cp "$FINAL_FILE" "$DNSMASQ_FILE"
+    chmod 644 "$DNSMASQ_FILE"
     
-    # Собираем финальный файл
-    > "$OUTPUT"
-    
-    # Добавляем ручные домены
-    if [ -f "$CUSTOM" ]; then
-        while read line; do
-            case "$line" in
-                ""|\#*) continue ;;
-                *) echo "$line" | grep -q '^nftset=/' && echo "$line" || echo "nftset=/$line/4#inet#fw4#vpn_domains" ;;
-            esac
-        done < "$CUSTOM" >> "$OUTPUT"
+    # Перезапускаем dnsmasq (OpenWrt way)
+    echo ""
+    echo "Restarting dnsmasq..."
+    if [ -f "/etc/init.d/dnsmasq" ]; then
+        /etc/init.d/dnsmasq restart 2>/dev/null
+        if [ $? -eq 0 ]; then
+            echo "✓ dnsmasq restarted successfully"
+        else
+            echo "✗ Failed to restart dnsmasq"
+            return 1
+        fi
+    else
+        echo "⚠ dnsmasq not found"
+        return 1
     fi
     
-    # Добавляем скачанные домены
-    grep '^nftset=/' "$LIST" >> "$OUTPUT" 2>/dev/null
+    echo ""
+    echo "=========================================="
+    echo "Done! - $(date '+%Y-%m-%d %H:%M:%S')"
+    echo "Domains count: $final_count"
+    echo "Config: $DNSMASQ_FILE"
+    echo "=========================================="
     
-    # Удаляем дубликаты
-    sort -u "$OUTPUT" -o "$OUTPUT"
-    
-    local COUNT=$(wc -l < "$OUTPUT")
-    echo "Всего доменов: $COUNT"
-    
-    # Копируем в dnsmasq
-    cp "$OUTPUT" "/etc/dnsmasq.d/vpn.conf"
-    
-    # Перезапускаем dnsmasq
-    /etc/init.d/dnsmasq restart
-    
-    echo "Готово! Dnsmasq перезапущен"
-    echo "---"
+    return 0
 }
 
-update_vpn_domains
+create_vpn_domains
 EOF
 
-chmod +x /usr/bin/vpn-domains-update
-
-# Добавляем в crontab
-# Проверить наличие команды в crontab
-if grep -q "vpn-domains-update" /etc/crontabs/root 2>/dev/null; then
-    echo "✓ Запись уже существует"
-else
-    echo "✗ Записи нет, добавляем..."
-    echo "0 */8 * * * /usr/bin/vpn-domains-update" >> /etc/crontabs/root
-fi
-
-# Перезапускаем cron
-/etc/init.d/cron restart
-
-# Для ручного запуска просто выполните
-/usr/bin/vpn-domains-update
+    chmod +x /usr/bin/vpn-domains-update
+    
+    # Добавляем в crontab с проверкой
+    local CRON_FILE="/etc/crontabs/root"
+    local CRON_JOB="0 */8 * * * /usr/bin/vpn-domains-update"
+    local CRON_RESTART=0
+    
+    # Создаём файл если нет
+    [ ! -f "$CRON_FILE" ] && touch "$CRON_FILE"
+    
+    # Проверяем и добавляем
+    if grep -q "vpn-domains-update" "$CRON_FILE" 2>/dev/null; then
+        echo "✓ Cron job already exists"
+        # Проверяем точное совпадение
+        if ! grep -q "^0 \*/8 \* \* \* /usr/bin/vpn-domains-update$" "$CRON_FILE" 2>/dev/null; then
+            echo "  Updating to correct schedule..."
+            sed -i '/vpn-domains-update/d' "$CRON_FILE"
+            echo "$CRON_JOB" >> "$CRON_FILE"
+            CRON_RESTART=1
+        fi
+    else
+        echo "Adding cron job: $CRON_JOB"
+        echo "$CRON_JOB" >> "$CRON_FILE"
+        CRON_RESTART=1
+    fi
+    
+    # Перезапускаем cron только если были изменения
+    if [ $CRON_RESTART -eq 1 ] && [ -f "/etc/init.d/cron" ]; then
+        /etc/init.d/cron restart
+        echo "✓ Cron restarted"
+    elif [ $CRON_RESTART -eq 1 ]; then
+        echo "✓ Cron job added (cron daemon may need manual restart)"
+    fi
+    
+    echo ""
+    echo "To run manually: /usr/bin/vpn-domains-update"
 }
 
+# Запуск
 update_domain_list

@@ -95,15 +95,13 @@ cat > /etc/nftables.d/91-vpn-mark.nft << 'EOF'
 ip daddr @vpn_domains meta mark set 0x1
 EOF
 
-uci add firewall rule
-uci set firewall.@rule[-1].name='vpn_domains_mark'
-uci set firewall.@rule[-1].family='ipv4'
-uci set firewall.@rule[-1].src='*'
-uci set firewall.@rule[-1].dest='*'
-uci set firewall.@rule[-1].ipset='vpn_domains'
-uci set firewall.@rule[-1].target='MARK'
-uci set firewall.@rule[-1].set_mark='0x1'
-uci commit firewall
+config rule
+    option name 'vpn_domains_mark'
+    option family 'ipv4'
+    option dest '*'
+    option ipset 'vpn_domains'
+    option set_mark '0x1'
+    option target 'MARK'
 
 /etc/init.d/firewall restart
 

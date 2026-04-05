@@ -226,7 +226,7 @@ else
 fi
 }
 
-#configure_dnscrypt
+configure_dnscrypt
 
 update_domain_list() {
     cat > /usr/bin/vpn-domains-update << 'EOF'

@@ -21,17 +21,24 @@ add_mark
 
 #Добавляем правило для таблицы маршрутизации, чтоб весь трафик, направленный в эту таблицу, уходил в туннель.
 add_vpn_route() {
-# Проверяем существует ли секция с именем vpn_route
-if uci -q get network.vpn_route > /dev/null; then
-    echo "Маршрут vpn_route уже существует"
-else
-    echo "Создаём маршрут vpn_route"
-    uci set network.vpn_route=route
-    uci set network.vpn_route.interface='wg0'
-    uci set network.vpn_route.table='vpn'
-    uci set network.vpn_route.target='0.0.0.0/0'
-    uci commit network
-fi
+# проверяем существование интерфейса
+    if ! ip link show wg0 > /dev/null 2>&1; then
+        echo "✗ Ошибка: интерфейс wg0 не найден"
+        echo "  Убедитесь, что WireGuard настроен"
+        return 1
+    fi
+
+    # Проверяем существует ли секция с именем vpn_route
+    if uci -q get network.vpn_route > /dev/null; then
+        echo "Маршрут vpn_route уже существует"
+    else
+        echo "Создаём маршрут vpn_route"
+        uci set network.vpn_route=route
+        uci set network.vpn_route.interface='wg0'
+        uci set network.vpn_route.table='vpn'
+        uci set network.vpn_route.target='0.0.0.0/0'
+        uci commit network
+    fi
 }
 
 add_vpn_route
@@ -223,7 +230,7 @@ fi
 
 configure_dnscrypt
 
-update_domain_list() {
+vpn-domains-update() {
     cat > /usr/bin/vpn-domains-update << 'EOF'
 #!/bin/sh
 
@@ -238,128 +245,111 @@ create_vpn_domains() {
     local MAX_RETRIES=3
     local RETRY_DELAY=3
     local attempt=1
-    
-    mkdir -p "$DOMAINS_DIR"
-    mkdir -p "$DNSMASQ_DIR"
-    
+
+    mkdir -p "$DOMAINS_DIR" "$DNSMASQ_DIR"
+
     echo "=========================================="
     echo "VPN Domains Update - $(date '+%Y-%m-%d %H:%M:%S')"
     echo "=========================================="
-    
-    # Создаем файл для ручных доменов
+
+    # Создаём кастомный файл, если его нет
     if [ ! -f "$CUSTOM_FILE" ]; then
-        echo "Creating custom domains file: $CUSTOM_FILE"
         printf '# Manual domains for VPN\n# One domain per line\nexample.com\n' > "$CUSTOM_FILE"
-        echo "✓ Created"
+        echo "Created custom file: $CUSTOM_FILE"
     fi
-    
-    # Скачиваем список
+
     echo ""
     echo "Downloading remote domain list..."
-    
+
     while [ $attempt -le $MAX_RETRIES ]; do
         echo "  Attempt $attempt of $MAX_RETRIES..."
-        
-        if wget -q -O "$REMOTE_FILE" "$URL" 2>/dev/null && [ -s "$REMOTE_FILE" ]; then
+        if wget -q -O "$REMOTE_FILE" "$URL" && [ -s "$REMOTE_FILE" ]; then
             echo "  ✓ Download successful"
             break
         else
             echo "  ✗ Download failed"
         fi
-        
-        if [ $attempt -lt $MAX_RETRIES ]; then
-            echo "  Retry in $RETRY_DELAY seconds..."
-            sleep $RETRY_DELAY
-        fi
+        [ $attempt -lt $MAX_RETRIES ] && sleep $RETRY_DELAY
         attempt=$((attempt + 1))
     done
-    
-    if [ -f "$REMOTE_FILE" ] && [ -s "$REMOTE_FILE" ]; then
-        remote_lines=$(wc -l < "$REMOTE_FILE")
-        echo "  Downloaded: $remote_lines lines"
-    else
-        echo "  ⚠ Using only custom domains"
-        rm -f "$REMOTE_FILE"
-    fi
-    
-    # Формируем итоговый файл
+
+    [ -s "$REMOTE_FILE" ] && echo "  Downloaded: $(wc -l < "$REMOTE_FILE") lines" \
+                          || echo "  ⚠ Using only custom domains"
+
     echo ""
     echo "Building final domain list..."
     > "$FINAL_FILE"
-    
-    # Добавляем ручные домены
-    if [ -f "$CUSTOM_FILE" ]; then
-        custom_count=0
+
+    #
+    # === ОБРАБОТКА КАСТОМНЫХ ДОМЕНОВ ===
+    #
+    custom_count=0
+    while IFS= read -r line || [ -n "$line" ]; do
+        # Убираем CRLF и пробелы
+        line=$(echo "$line" | tr -d '\r' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+
+        # Пропускаем пустые строки и комментарии
+        [ -z "$line" ] && continue
+        echo "$line" | grep -q '^#' && continue
+
+        # Если пользователь сам написал nftset=/... — добавляем как есть
+        if echo "$line" | grep -q '^nftset=/'; then
+            echo "$line" >> "$FINAL_FILE"
+            custom_count=$((custom_count + 1))
+            continue
+        fi
+
+        # Проверка домена
+        if echo "$line" | grep -qE '^[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$'; then
+            echo "nftset=/$line/4#inet#fw4#vpn_domains" >> "$FINAL_FILE"
+            custom_count=$((custom_count + 1))
+        else
+            echo "⚠ Skipped invalid custom entry: $line"
+        fi
+    done < "$CUSTOM_FILE"
+
+    echo "  Custom domains: $custom_count"
+
+    #
+    # === ОБРАБОТКА УДАЛЁННОГО СПИСКА ===
+    #
+    remote_count=0
+    if [ -s "$REMOTE_FILE" ]; then
         while IFS= read -r line; do
-            # Пропускаем пустые строки и комментарии
-            [ -z "$line" ] && continue
-            echo "$line" | grep -q '^[[:space:]]*#' && continue
-            
-            # Убираем пробелы
-            line=$(echo "$line" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
-            
-            # Простой домен
-            if echo "$line" | grep -qE '^[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$'; then
-                echo "nftset=/$line/4#inet#fw4#vpn_domains" >> "$FINAL_FILE"
-                custom_count=$((custom_count + 1))
-            fi
-        done < "$CUSTOM_FILE"
-        echo "  Custom domains: $custom_count"
-    fi
-    
-    # Добавляем удаленные домены
-    if [ -f "$REMOTE_FILE" ] && [ -s "$REMOTE_FILE" ]; then
-        remote_count=0
-        while IFS= read -r line; do
-            if echo "$line" | grep -q '^nftset=/'; then
-                echo "$line" >> "$FINAL_FILE"
-                remote_count=$((remote_count + 1))
-            fi
+            echo "$line" | grep -q '^nftset=/' || continue
+            echo "$line" >> "$FINAL_FILE"
+            remote_count=$((remote_count + 1))
         done < "$REMOTE_FILE"
-        echo "  Remote domains: $remote_count"
     fi
-    
-    # Удаляем дубликаты
-    if [ -s "$FINAL_FILE" ]; then
-        sort -t'/' -k2,2 -u "$FINAL_FILE" > "${FINAL_FILE}.tmp"
-        mv "${FINAL_FILE}.tmp" "$FINAL_FILE"
-        
-        final_count=$(wc -l < "$FINAL_FILE")
-        echo ""
-        echo "✓ Total unique domains: $final_count"
-    else
-        echo "✗ Error: No domains to process"
-        return 1
-    fi
-    
-    # Копируем в dnsmasq
+
+    echo "  Remote domains: $remote_count"
+
+    #
+    # === УДАЛЕНИЕ ДУБЛИКАТОВ ===
+    #
+    sort -t'/' -k2,2 -u "$FINAL_FILE" > "${FINAL_FILE}.tmp"
+    mv "${FINAL_FILE}.tmp" "$FINAL_FILE"
+
+    final_count=$(wc -l < "$FINAL_FILE")
+    echo ""
+    echo "✓ Total unique domains: $final_count"
+
+    #
+    # === КОПИРОВАНИЕ В DNSMASQ ===
+    #
     cp "$FINAL_FILE" "$DNSMASQ_FILE"
     chmod 644 "$DNSMASQ_FILE"
-    
-    # Перезапускаем dnsmasq (OpenWrt way)
+
     echo ""
     echo "Restarting dnsmasq..."
-    if [ -f "/etc/init.d/dnsmasq" ]; then
-        /etc/init.d/dnsmasq restart 2>/dev/null
-        if [ $? -eq 0 ]; then
-            echo "✓ dnsmasq restarted successfully"
-        else
-            echo "✗ Failed to restart dnsmasq"
-            return 1
-        fi
-    else
-        echo "⚠ dnsmasq not found"
-        return 1
-    fi
-    
+    /etc/init.d/dnsmasq restart && echo "✓ dnsmasq restarted" || echo "✗ Failed to restart dnsmasq"
+
     echo ""
     echo "=========================================="
     echo "Done! - $(date '+%Y-%m-%d %H:%M:%S')"
     echo "Domains count: $final_count"
     echo "Config: $DNSMASQ_FILE"
     echo "=========================================="
-    
-    return 0
 }
 
 create_vpn_domains

@@ -230,7 +230,7 @@ fi
 
 configure_dnscrypt
 
-vpn-domains-update() {
+update_domain_list() {
     cat > /usr/bin/vpn-domains-update << 'EOF'
 #!/bin/sh
 
